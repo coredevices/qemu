@@ -15,7 +15,7 @@ jobs:
       - run: make
       - uses: actions/upload-artifact@v4
         with:
-          name: qemu-pebble
+          name: qemu-system-arm
           path: arm-softmmu/qemu-system-arm
       - uses: actions/upload-artifact@v4
         with:
