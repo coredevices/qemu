@@ -1,0 +1,19 @@
+on:
+  push:
+    branches:
+      - master
+jobs:
+  build-qemu:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt update
+      - run: apt install -y autoconf libglib2.0-dev libpixman-1-dev python2.7 build-essential
+      - run: ./configure --disable-werror --enable-debug --target-list="arm-softmmu" --extra-cflags=-DSTM32_UART_NO_BAUD_DELAY --disable-mouse --python=/usr/bin/python2.7
+      - run: make
+      - uses: actions/upload-artifact@v4
+        with:
+          path: arm-softmmu/qemu-system-arm
+      - uses: actions/upload-artifact@v4
+        with:
+          path: pc-bios/
