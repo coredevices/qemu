@@ -15,7 +15,9 @@ jobs:
       - run: make
       - uses: actions/upload-artifact@v4
         with:
+          name: qemu-pebble
           path: arm-softmmu/qemu-system-arm
       - uses: actions/upload-artifact@v4
         with:
+          name: pc-bios
           path: pc-bios/
