@@ -10,9 +10,9 @@ jobs:
         with:
           submodules: 'recursive'
       - run: brew update
-      - run: brew install autoconf pyenv
+      - run: brew install autoconf pyenv sdl2
       - run: pyenv install 2.7
-      - run: ./configure --disable-werror --enable-debug --target-list="arm-softmmu" --extra-cflags=-DSTM32_UART_NO_BAUD_DELAY --disable-mouse --python=/Users/runner/.pyenv/versions/2.7.18/bin/python
+      - run: ./configure --with-coroutine=gthread --disable-werror --disable-mouse --disable-cocoa --enable-debug --enable-sdl --with-sdlabi=2.0 --target-list=arm-softmmu --extra-cflags=-DSTM32_UART_NO_BAUD_DELAY --extra-ldflags=-g --disable-vnc-jpeg --disable-vnc-png --disable-curses --python=/Users/runner/.pyenv/versions/2.7.18/bin/python
       - run: make
       - uses: actions/upload-artifact@v4
         with:
