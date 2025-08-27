@@ -32,6 +32,7 @@ jobs:
             --disable-libssh2 \
             --disable-vnc-sasl \
             --disable-gcrypt \
+            --disable-bzip2 \
             --python=/Users/runner/.pyenv/versions/2.7.18/bin/python
       - run: make
       # Create lib directory structure with pc-bios and dylibs

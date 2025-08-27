@@ -26,6 +26,11 @@ jobs:
             --disable-vnc-jpeg \
             --disable-vnc-png \
             --disable-curses \
+            --disable-gnutls \
+            --disable-nettle \
+            --disable-libssh2 \
+            --disable-vnc-sasl \
+            --disable-gcrypt \
             --disable-bzip2 \
             --python=/usr/bin/python2.7
       - run: make
