@@ -32,6 +32,7 @@ jobs:
             --disable-vnc-sasl \
             --disable-gcrypt \
             --disable-bzip2 \
+            --disable-lzo \
             --python=/usr/bin/python2.7
       - run: make
       - uses: actions/upload-artifact@v4
