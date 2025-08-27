@@ -10,7 +10,7 @@ jobs:
         with:
           submodules: 'recursive'
       - run: brew update
-      - run: brew install autoconf pyenv sdl2 zlib pixman
+      - run: brew install autoconf pyenv sdl2 zlib pixman glib gettext pcre2
       - run: pyenv install 2.7
       - run: |
           ./configure \
@@ -43,6 +43,10 @@ jobs:
           cp -r pc-bios lib/
           cp $(brew --prefix pixman)/lib/libpixman-1.0.dylib lib/
           cp $(brew --prefix sdl2)/lib/libSDL2-2.0.0.dylib lib/
+          cp $(brew --prefix glib)/lib/libgthread-2.0.0.dylib lib/
+          cp $(brew --prefix glib)/lib/libglib-2.0.0.dylib lib/
+          cp $(brew --prefix gettext)/lib/libintl.8.dylib lib/
+          cp $(brew --prefix pcre2)/lib/libpcre2-8.0.dylib lib/
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-system-arm
