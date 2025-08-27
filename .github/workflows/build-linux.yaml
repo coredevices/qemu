@@ -11,7 +11,22 @@ jobs:
           submodules: 'recursive'
       - run: sudo apt update
       - run: sudo apt install -y autoconf libglib2.0-dev libpixman-1-dev libsdl2-dev python2.7 build-essential
-      - run: ./configure --with-coroutine=gthread --disable-werror --disable-mouse --disable-cocoa --enable-debug --enable-sdl --with-sdlabi=2.0 --target-list=arm-softmmu --extra-cflags=-DSTM32_UART_NO_BAUD_DELAY --extra-ldflags=-g --disable-vnc-jpeg --disable-vnc-png --disable-curses --python=/usr/bin/python2.7
+      - run: |
+          ./configure \
+            --with-coroutine=gthread \
+            --disable-werror \
+            --disable-mouse \
+            --disable-cocoa \
+            --enable-debug \
+            --enable-sdl \
+            --with-sdlabi=2.0 \
+            --target-list=arm-softmmu \
+            --extra-cflags=-DSTM32_UART_NO_BAUD_DELAY \
+            --extra-ldflags=-g \
+            --disable-vnc-jpeg \
+            --disable-vnc-png \
+            --disable-curses \
+            --python=/usr/bin/python2.7
       - run: make
       - uses: actions/upload-artifact@v4
         with:

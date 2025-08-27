@@ -12,7 +12,27 @@ jobs:
       - run: brew update
       - run: brew install autoconf pyenv sdl2 zlib pixman
       - run: pyenv install 2.7
-      - run: ./configure --with-coroutine=gthread --disable-werror --disable-mouse --disable-cocoa --enable-debug --enable-sdl --with-sdlabi=2.0 --target-list=arm-softmmu --extra-cflags=-DSTM32_UART_NO_BAUD_DELAY --extra-ldflags=-g --disable-vnc-jpeg --disable-vnc-png --disable-curses --disable-gnutls --disable-nettle --disable-libssh2 --disable-vnc-sasl --disable-gcrypt --python=/Users/runner/.pyenv/versions/2.7.18/bin/python
+      - run: |
+          ./configure \
+            --with-coroutine=gthread \
+            --disable-werror \
+            --disable-mouse \
+            --disable-cocoa \
+            --enable-debug \
+            --enable-sdl \
+            --with-sdlabi=2.0 \
+            --target-list=arm-softmmu \
+            --extra-cflags=-DSTM32_UART_NO_BAUD_DELAY \
+            --extra-ldflags=-g \
+            --disable-vnc-jpeg \
+            --disable-vnc-png \
+            --disable-curses \
+            --disable-gnutls \
+            --disable-nettle \
+            --disable-libssh2 \
+            --disable-vnc-sasl \
+            --disable-gcrypt \
+            --python=/Users/runner/.pyenv/versions/2.7.18/bin/python
       - run: make
       # Create lib directory structure with pc-bios and libpixman
       - run: |
