@@ -33,6 +33,7 @@ jobs:
             --disable-gcrypt \
             --disable-bzip2 \
             --disable-lzo \
+            --disable-libusb \
             --python=/usr/bin/python2.7
       - run: make
       - uses: actions/upload-artifact@v4
