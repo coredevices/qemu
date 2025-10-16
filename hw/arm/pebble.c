@@ -106,6 +106,27 @@ const static PblBoardConfig s_board_config_snowy_bb = {
     .round_mask = false
 };
 
+const static PblBoardConfig s_board_config_snowy_emery_bb = {
+    .dbgserial_uart_index = 2,       // USART3
+    .pebble_control_uart_index = 1,  // USART2
+    .button_map = {
+        {STM32_GPIOG_INDEX, 4}, // back
+        {STM32_GPIOG_INDEX, 3}, // up
+        {STM32_GPIOG_INDEX, 1}, // select
+        {STM32_GPIOG_INDEX, 2}, // down
+    },
+    .flash_size = 4096,  /* Kbytes - larger to aid in development and debugging */
+    .ram_size = 512,  /* Kbytes */
+    .num_rows = 228,
+    .num_cols = 200,
+    .num_border_rows = 0,
+    .num_border_cols = 0,
+    .row_major = true,
+    .row_inverted = true,
+    .col_inverted = true,
+    .round_mask = false
+};
+
 const static PblBoardConfig s_board_config_s4_bb = {
     .dbgserial_uart_index = 2,       // USART3
     .pebble_control_uart_index = 1,  // USART2
@@ -642,6 +663,11 @@ static void pebble_snowy_init(MachineState *machine)
     pebble_32f439_init(machine, &s_board_config_snowy_bb);
 }
 
+static void pebble_snowy_emery_init(MachineState *machine)
+{
+    pebble_32f439_init(machine, &s_board_config_snowy_emery_bb);
+}
+
 static void pebble_s4_init(MachineState *machine)
 {
     pebble_32f439_init(machine, &s_board_config_s4_bb);
@@ -671,6 +697,14 @@ static void pebble_snowy_bb_machine_init(MachineClass *mc)
 }
 
 DEFINE_MACHINE("pebble-snowy-bb", pebble_snowy_bb_machine_init)
+
+static void pebble_snowy_emery_machine_init(MachineClass *mc)
+{
+    mc->desc = "Pebble smartwatch (snowy, but emery)";
+    mc->init = pebble_snowy_emery_init;
+}
+
+DEFINE_MACHINE("pebble-snowy-emery-bb", pebble_snowy_emery_machine_init)
 
 static void pebble_s4_bb_machine_init(MachineClass *mc)
 {
