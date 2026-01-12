@@ -148,6 +148,27 @@ const static PblBoardConfig s_board_config_s4_bb = {
     .round_mask = true
 };
 
+const static PblBoardConfig s_board_config_spalding_gabbro_bb = {
+    .dbgserial_uart_index = 2,       // USART3
+    .pebble_control_uart_index = 1,  // USART2
+    .button_map = {
+        {STM32_GPIOG_INDEX, 4}, // back
+        {STM32_GPIOG_INDEX, 3}, // up
+        {STM32_GPIOG_INDEX, 1}, // select
+        {STM32_GPIOG_INDEX, 2}, // down
+    },
+    .flash_size = 4096,  /* Kbytes - larger to aid in development and debugging */
+    .ram_size = 512,  /* Kbytes */
+    .num_rows = 260,
+    .num_cols = 260,
+    .num_border_rows = 0,
+    .num_border_cols = 0,
+    .row_major = true,
+    .row_inverted = false,
+    .col_inverted = false,
+    .round_mask = true
+};
+
 // ----------------------------------------------------------------------------------------
 // Static globals
 static PblButtonID s_waiting_key_up_id = PBL_BUTTON_ID_NONE;
@@ -673,6 +694,11 @@ static void pebble_s4_init(MachineState *machine)
     pebble_32f439_init(machine, &s_board_config_s4_bb);
 }
 
+static void pebble_spalding_gabbro_init(MachineState *machine)
+{
+    pebble_32f439_init(machine, &s_board_config_spalding_gabbro_bb);
+}
+
 
 static void pebble_bb2_machine_init(MachineClass *mc)
 {
@@ -714,3 +740,10 @@ static void pebble_s4_bb_machine_init(MachineClass *mc)
 
 DEFINE_MACHINE("pebble-s4-bb", pebble_s4_bb_machine_init)
 
+static void pebble_spalding_gabbro_machine_init(MachineClass *mc)
+{
+    mc->desc = "Pebble smartwatch (spalding, but gabbro)";
+    mc->init = pebble_spalding_gabbro_init;
+}
+
+DEFINE_MACHINE("pebble-spalding-gabbro-bb", pebble_spalding_gabbro_machine_init)

@@ -204,7 +204,6 @@ static uint8_t *get_pebble_logo_4colors_image(int *width, int *height);
 static uint8_t *get_dead_face_image(int *width, int *height);
 static uint8_t *get_small_pebble_logo_image(int *width, int *height);
 static uint8_t *get_url_image(int *width, int *height);
-static uint8_t *get_pixel_mask(void);
 
 static uint32_t display_bytes = 0;
 static uint32_t frameno = 0;
@@ -791,20 +790,25 @@ static void ps_display_update_display(void *arg)
         return;
     }
 
-    const bool is_spalding =  s->round_mask;
-    const PSDisplayPixelColorWithAlpha *overlay = is_spalding ? g_spalding_overlay : NULL;
-    uint8_t *pixel_mask = get_pixel_mask();
+    // Only use the 180x180 overlay for 180x180 displays (s4), not for larger round displays
+    const bool use_overlay = s->round_mask && s->num_rows == 180 && s->num_cols == 180;
+    const PSDisplayPixelColorWithAlpha *overlay = use_overlay ? g_spalding_overlay : NULL;
+    const int radius = s->num_cols / 2;
     for (y = 0; y < s->num_rows; y++) {
         for (x = 0; x < s->num_cols; x++) {
           uint32_t offset = y * s->bytes_per_row + x;
           uint8_t pixel = s->framebuffer_copy[offset];
             if (s->round_mask) {
-                // Compute the vertical distance from top or bottom edge, whichever is closest
+                // Compute mask width dynamically based on circle geometry
+                // This works for any display size, not just 180x180
                 int vert_distance = y;
                 if (vert_distance >= s->num_rows/2) {
-                  vert_distance = s->num_rows - 1 - y ;
+                  vert_distance = s->num_rows - 1 - y;
                 }
-                int mask_width = pixel_mask[vert_distance];
+                // For a circle: x^2 + y^2 = r^2, so x = sqrt(r^2 - y^2)
+                int dist_from_center = radius - vert_distance;
+                int horiz_extent = (int)sqrt((double)(radius * radius - dist_from_center * dist_from_center));
+                int mask_width = radius - horiz_extent;
                 if (x < mask_width || x >= s->num_cols - mask_width) {
                   pixel = 0;
                 }
@@ -1093,29 +1097,6 @@ static void ps_display_register(void)
 type_init(ps_display_register);
 
 
-// -------------------------------------------------------------------------
-// The Spalding round display is logically a square 180x180 display with
-// some of the pixels hidden under a mask or missing entirely. The mask
-// is symmetrical both horizontally and vertically: the masks on the
-// left and right side of a line are equal, and the mask on the top half
-// of the display is a mirror image of the bottom half.
-//
-// This array maps the number of pixels masked off for one quadrant of
-// the display. Array element zero is the number of masked pixels from
-// a display corner inwards. Subsequent array elements contain the mask
-// for the adjacent rows or columns moving inwards towards the center
-// of the display.
-static uint8_t *get_pixel_mask(void) {
-
-    static uint8_t pixel_mask[] = {
-        76, 71, 66, 63, 60, 57, 55, 52, 50, 48, 46, 45, 43, 41, 40, 38, 37,
-        36, 34, 33, 32, 31, 29, 28, 27, 26, 25, 24, 23, 22, 22, 21, 20, 19,
-        18, 18, 17, 16, 15, 15, 14, 13, 13, 12, 12, 11, 10, 10, 9, 9, 8, 8, 7,
-        7, 7, 6, 6, 5, 5, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-    };
-    return pixel_mask;
-}
 
 
 static uint8_t *get_pebble_logo_4colors_image(int *width, int *height) {
