@@ -4,7 +4,15 @@ on:
       - master
 jobs:
   build:
-    runs-on: macos-15-intel
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+        include:
+          - arch: x64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,9 +57,9 @@ jobs:
           cp $(brew --prefix pcre2)/lib/libpcre2-8.0.dylib lib/
       - uses: actions/upload-artifact@v4
         with:
-          name: qemu-system-arm
+          name: qemu-system-arm-macos-${{ matrix.arch }}
           path: arm-softmmu/qemu-system-arm
       - uses: actions/upload-artifact@v4
         with:
-          name: lib
+          name: lib-macos-${{ matrix.arch }}
           path: lib/
