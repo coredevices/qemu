@@ -1,0 +1,138 @@
+on:
+  push:
+    branches:
+      - master
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm64
+          - os: macos
+            arch: x64
+            runner: macos-15-intel
+          - os: macos
+            arch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      # Linux dependencies
+      - name: Install Linux dependencies
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt update
+          sudo apt install -y autoconf libglib2.0-dev libpixman-1-dev libsdl2-dev build-essential
+          curl https://pyenv.run | bash
+          export PYENV_ROOT="$HOME/.pyenv"
+          export PATH="$PYENV_ROOT/bin:$PATH"
+          eval "$(pyenv init -)"
+          pyenv install 2.7.18
+          echo "$HOME/.pyenv/bin" >> $GITHUB_PATH
+          echo "$HOME/.pyenv/shims" >> $GITHUB_PATH
+
+      # macOS dependencies
+      - name: Install macOS dependencies
+        if: matrix.os == 'macos'
+        run: |
+          brew update
+          brew install autoconf pyenv sdl2 zlib pixman glib gettext pcre2
+          pyenv install 2.7
+
+      # Configure (Linux)
+      - name: Configure build
+        if: matrix.os == 'linux'
+        run: |
+          ./configure \
+            --with-coroutine=gthread \
+            --disable-werror \
+            --disable-mouse \
+            --disable-cocoa \
+            --enable-debug \
+            --enable-sdl \
+            --with-sdlabi=2.0 \
+            --target-list=arm-softmmu \
+            --extra-cflags=-DSTM32_UART_NO_BAUD_DELAY \
+            --extra-ldflags=-g \
+            --disable-vnc-jpeg \
+            --disable-vnc-png \
+            --disable-curses \
+            --disable-gnutls \
+            --disable-nettle \
+            --disable-libssh2 \
+            --disable-vnc-sasl \
+            --disable-gcrypt \
+            --disable-bzip2 \
+            --disable-lzo \
+            --disable-libusb \
+            --python=$HOME/.pyenv/versions/2.7.18/bin/python
+
+      # Configure (macOS)
+      - name: Configure build
+        if: matrix.os == 'macos'
+        run: |
+          ./configure \
+            --with-coroutine=gthread \
+            --disable-werror \
+            --disable-mouse \
+            --disable-cocoa \
+            --enable-debug \
+            --enable-sdl \
+            --with-sdlabi=2.0 \
+            --target-list=arm-softmmu \
+            --extra-cflags=-DSTM32_UART_NO_BAUD_DELAY \
+            --extra-ldflags=-g \
+            --disable-vnc-jpeg \
+            --disable-vnc-png \
+            --disable-curses \
+            --disable-gnutls \
+            --disable-nettle \
+            --disable-libssh2 \
+            --disable-vnc-sasl \
+            --disable-gcrypt \
+            --disable-bzip2 \
+            --disable-lzo \
+            --disable-libusb \
+            --python=/Users/runner/.pyenv/versions/2.7.18/bin/python
+
+      - name: Build
+        run: make
+
+      # Package macOS libraries
+      - name: Package macOS libraries
+        if: matrix.os == 'macos'
+        run: |
+          mkdir -p lib
+          cp -r pc-bios lib/
+          cp $(brew --prefix pixman)/lib/libpixman-1.0.dylib lib/
+          cp $(brew --prefix sdl2)/lib/libSDL2-2.0.0.dylib lib/
+          cp $(brew --prefix glib)/lib/libgthread-2.0.0.dylib lib/
+          cp $(brew --prefix glib)/lib/libglib-2.0.0.dylib lib/
+          cp $(brew --prefix gettext)/lib/libintl.8.dylib lib/
+          cp $(brew --prefix pcre2)/lib/libpcre2-8.0.dylib lib/
+
+      # Upload artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-system-arm-${{ matrix.os }}-${{ matrix.arch }}
+          path: arm-softmmu/qemu-system-arm
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'linux'
+        with:
+          name: pc-bios-${{ matrix.os }}-${{ matrix.arch }}
+          path: pc-bios/
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'macos'
+        with:
+          name: lib-${{ matrix.os }}-${{ matrix.arch }}
+          path: lib/
