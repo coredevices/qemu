@@ -61,6 +61,10 @@
 enum {
     WCYCLE_CFI              = 7,
     WCYCLE_AUTOSELECT_CFI   = 8,
+    /* Macronix-specific states for Write-to-Buffer and sector protection. */
+    WCYCLE_MX_WRITE_BUF_WC  = 9,
+    WCYCLE_MX_WRITE_BUF_DATA = 10,
+    WCYCLE_MX_PROTECT        = 11,
 };
 
 struct PFlashCFI02 {
@@ -83,6 +87,10 @@ struct PFlashCFI02 {
     int ro;
     uint8_t cmd;
     uint8_t status;
+    /* Macronix write-buffer state */
+    uint32_t mx_wb_sector;
+    uint32_t mx_wb_words;
+    uint32_t mx_wb_pos;
     /* FIXME: implement array device properties */
     uint16_t ident0;
     uint16_t ident1;
@@ -376,6 +384,11 @@ static uint64_t pflash_read(void *opaque, hwaddr offset, unsigned int width)
         ret = pfl->status;
         trace_pflash_read_status(pfl->name, ret);
         break;
+    case 0x70:
+        /* Macronix Read Status Register - bit 7 = device ready */
+        ret = 0x80;
+        pflash_reset_state_machine(pfl);
+        break;
     case 0x98:
         /* CFI query mode */
         if (boff < sizeof(pfl->cfi_table)) {
@@ -438,8 +451,9 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
 
     trace_pflash_io_write(pfl->name, offset, width, value, pfl->wcycle);
     cmd = value;
-    if (pfl->cmd != 0xA0) {
-        /* Reset does nothing during chip erase and sector erase. */
+    if (pfl->cmd != 0xA0 &&
+        pfl->wcycle != WCYCLE_MX_WRITE_BUF_DATA) {
+        /* Reset does nothing during chip erase, sector erase, or WTB data. */
         if (cmd == 0xF0 && pfl->cmd != 0x10 && pfl->cmd != 0x30) {
             if (pfl->wcycle == WCYCLE_AUTOSELECT_CFI) {
                 /* Return to autoselect mode. */
@@ -470,8 +484,8 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
         pfl->read_counter = 0;
         /* We're in read mode */
     check_unlock0:
-        if (boff == 0x55 && cmd == 0x98) {
-            /* Enter CFI query mode */
+        if ((boff == 0x55 || boff == 0x555) && cmd == 0x98) {
+            /* Enter CFI query mode (accept 0x555 for Macronix parts) */
             pfl->wcycle = WCYCLE_CFI;
             pfl->cmd = 0x98;
             return;
@@ -494,6 +508,38 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
         /* Ignore erase suspend. */
         if (cmd == 0xB0) { /* Erase Suspend */
             return;
+        }
+        /* Macronix Read Status Register (0x70) - no unlock needed */
+        if (cmd == 0x70) {
+            pfl->cmd = 0x70;
+            return;
+        }
+        /* Macronix Write-to-Buffer (0x25) - no unlock needed */
+        if (cmd == 0x25) {
+            pfl->wcycle = WCYCLE_MX_WRITE_BUF_WC;
+            pfl->cmd = 0x25;
+            pfl->mx_wb_sector = offset;
+            return;
+        }
+        /* Macronix Sector Protection Entry (0x60) */
+        if (cmd == 0x60) {
+            pfl->wcycle = WCYCLE_MX_PROTECT;
+            pfl->cmd = 0x60;
+            return;
+        }
+        /* Macronix resume/confirm (0xD0) - ignore */
+        if (cmd == 0xD0) {
+            goto reset_flash;
+        }
+        /* Macronix sector erase (0x33) - no unlock needed */
+        if (cmd == 0x33) {
+            pflash_sector_erase(pfl, offset);
+            pfl->cmd = 0x33;
+            return;
+        }
+        /* Macronix exit protection (0x71) - no-op at wcycle 0 */
+        if (cmd == 0x71) {
+            goto reset_flash;
         }
         if (boff != pfl->unlock_addr0 || cmd != 0xAA) {
             trace_pflash_unlock0_failed(pfl->name, boff,
@@ -576,7 +622,7 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
              * We can enter CFI query mode from autoselect mode, but we must
              * return to autoselect mode after a reset.
              */
-            if (boff == 0x55 && cmd == 0x98) {
+            if ((boff == 0x55 || boff == 0x555) && cmd == 0x98) {
                 /* Enter autoselect CFI query mode */
                 pfl->wcycle = WCYCLE_AUTOSELECT_CFI;
                 pfl->cmd = 0x98;
@@ -689,6 +735,71 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
     default:
         /* Should never happen */
         trace_pflash_write(pfl->name, "invalid write state (wc 7)");
+        goto reset_flash;
+
+    /* === Macronix Write-to-Buffer states === */
+    case WCYCLE_MX_WRITE_BUF_WC:
+        /* Word count (number of words - 1) */
+        pfl->mx_wb_words = (value & 0xFFFF) + 1;
+        pfl->mx_wb_pos = 0;
+        pfl->wcycle = WCYCLE_MX_WRITE_BUF_DATA;
+        return;
+
+    case WCYCLE_MX_WRITE_BUF_DATA:
+        if (cmd == 0x29 && offset == pfl->mx_wb_sector) {
+            /* Write-to-Buffer Program Confirm (must target sector address) */
+            goto reset_flash;
+        }
+        /* Store data word (NOR flash: can only clear bits) */
+        if (!pfl->ro) {
+            p = (uint8_t *)pfl->storage + offset;
+            if (pfl->be) {
+                uint64_t current = ldn_be_p(p, width);
+                stn_be_p(p, width, current & value);
+            } else {
+                uint64_t current = ldn_le_p(p, width);
+                stn_le_p(p, width, current & value);
+            }
+            pflash_update(pfl, offset, width);
+        }
+        pfl->mx_wb_pos++;
+        return;
+
+    /* === Macronix Sector Protection states === */
+    case WCYCLE_MX_PROTECT:
+        if (cmd == 0x71 || cmd == 0xF0) {
+            /* Exit protection mode */
+            goto reset_flash;
+        }
+        if (cmd == 0x60 || cmd == 0x61) {
+            /* Protection entry / unprotect sector - accept */
+            return;
+        }
+        if (cmd == 0x25) {
+            /* Write-to-Buffer directly from protection mode */
+            pfl->wcycle = WCYCLE_MX_WRITE_BUF_WC;
+            pfl->cmd = 0x25;
+            pfl->mx_wb_sector = offset;
+            return;
+        }
+        if (cmd == 0x80) {
+            /* Erase setup within protection mode */
+            pfl->cmd = 0x80;
+            return;
+        }
+        if ((cmd == 0x30 || cmd == 0x33) && pfl->cmd == 0x80) {
+            /* Sector erase confirm */
+            pflash_sector_erase(pfl, offset);
+            pfl->cmd = cmd;
+            return;
+        }
+        if (cmd == 0x33) {
+            /* Sector erase directly from protection mode */
+            pflash_sector_erase(pfl, offset);
+            pfl->cmd = 0x33;
+            return;
+        }
+        /* Unknown - exit protection */
         goto reset_flash;
     }
     pfl->wcycle++;
