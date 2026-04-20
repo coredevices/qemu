@@ -2,6 +2,9 @@
 /build/
 /.cache/
 /.vscode/
+/.venv/
+/dist/
+/result
 *.pyc
 .sdk
 .stgit-*

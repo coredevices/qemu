@@ -1,0 +1,60 @@
+name: Build
+
+on:
+  push:
+    branches: [pebble-10.1]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-22.04
+            os: linux
+          - name: linux-arm64
+            runner: ubuntu-22.04-arm
+            os: linux
+          - name: macos-arm64
+            runner: macos-latest
+            os: macos
+          - name: macos-x86_64
+            runner: macos-latest-large
+            os: macos
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build pkg-config python3-venv \
+            libsdl2-dev libpixman-1-dev libglib2.0-dev \
+            libpcre2-dev libffi-dev zlib1g-dev
+
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macos'
+        run: |
+          brew install sdl2 pixman glib pkg-config ninja
+
+      - name: Build
+        run: bash build-dist.sh
+
+      - name: Smoke test binary
+        run: |
+          ./dist/bin/qemu-pebble --version
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: qemu-pebble-${{ matrix.name }}
+          path: dist/
+          if-no-files-found: error
