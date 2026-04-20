@@ -24,6 +24,9 @@
  *   0x18 BRIGHTNESS - Backlight brightness 0-255
  *   0x1C INTSTAT    - Bit 0: update complete (write-1-to-clear)
  *   0x20 INTCTRL    - Bit 0: update complete IRQ enable
+ *   0x24 BL_RED     - RGB backlight red channel 0-255 (default 255)
+ *   0x28 BL_GREEN   - RGB backlight green channel 0-255 (default 255)
+ *   0x2C BL_BLUE    - RGB backlight blue channel 0-255 (default 255)
  *
  * Copyright (c) 2026 Core Devices LLC
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -51,6 +54,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(PblDisplay, PEBBLE_DISPLAY)
 #define DISP_BRIGHTNESS 0x18
 #define DISP_INTSTAT    0x1C
 #define DISP_INTCTRL    0x20
+#define DISP_BL_RED     0x24
+#define DISP_BL_GREEN   0x28
+#define DISP_BL_BLUE    0x2C
 
 /* CTRL bits */
 #define CTRL_ENABLE     (1 << 0)
@@ -65,6 +71,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(PblDisplay, PEBBLE_DISPLAY)
 /* Display format constants */
 #define FMT_1BPP  1
 #define FMT_8BPP  8
+
+/* Transflective LCD ambient-reflectance floor (0-255). Sets the visible
+ * brightness when the RGB backlight is fully off, matching a Pebble's
+ * readability in ambient light. */
+#define PBL_DISPLAY_AMBIENT_FLOOR 100
 
 struct PblDisplay {
     SysBusDevice parent_obj;
@@ -89,6 +100,9 @@ struct PblDisplay {
     uint32_t brightness;
     uint32_t intstat;
     uint32_t intctrl;
+    uint8_t  bl_r;
+    uint8_t  bl_g;
+    uint8_t  bl_b;
 
     bool redraw;
     bool vibrating;
@@ -193,6 +207,35 @@ static void pbl_display_update(void *opaque)
                 b = (uint8_t)((uint32_t)b * s->brightness / 255);
             }
 
+            /* RGB backlight on a transflective LCD: ambient light reflects
+             * off the panel (neutral white) while the backlight shines
+             * through it (colored). The backlight dominates when bright, so
+             * the ambient white contribution must fade out as any channel of
+             * the LED lights up — otherwise pure-blue (0,0,255) leaves R=G=
+             * AMBIENT and you get washed-out light blue instead of deep blue.
+             *
+             * Scale ambient by (255 - max(bl_r,bl_g,bl_b)) so:
+             *   bl=(0,0,0)     → full ambient white floor (readable in room light)
+             *   bl=(0,0,255)   → no ambient, pure deep blue
+             *   bl=(255,255,255) → no ambient, full white
+             *   bl=(128,0,0)   → half ambient + half red → muted red-orange */
+            {
+                const uint32_t amb = PBL_DISPLAY_AMBIENT_FLOOR;
+                uint32_t bl_max = s->bl_r;
+                if (s->bl_g > bl_max) bl_max = s->bl_g;
+                if (s->bl_b > bl_max) bl_max = s->bl_b;
+                uint32_t amb_contrib = amb * (255U - bl_max) / 255U;
+                uint32_t eff_r = amb_contrib + s->bl_r;
+                uint32_t eff_g = amb_contrib + s->bl_g;
+                uint32_t eff_b = amb_contrib + s->bl_b;
+                if (eff_r > 255U) eff_r = 255U;
+                if (eff_g > 255U) eff_g = 255U;
+                if (eff_b > 255U) eff_b = 255U;
+                r = (uint8_t)((uint32_t)r * eff_r / 255U);
+                g = (uint8_t)((uint32_t)g * eff_g / 255U);
+                b = (uint8_t)((uint32_t)b * eff_b / 255U);
+            }
+
             /* Write pixel to host surface */
             uint8_t *pixel = dest + y * stride + x * (bpp / 8);
             switch (bpp) {
@@ -254,6 +297,12 @@ static uint64_t pbl_display_regs_read(void *opaque, hwaddr offset,
         return s->intstat;
     case DISP_INTCTRL:
         return s->intctrl;
+    case DISP_BL_RED:
+        return s->bl_r;
+    case DISP_BL_GREEN:
+        return s->bl_g;
+    case DISP_BL_BLUE:
+        return s->bl_b;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pebble-display: bad read offset 0x%" HWADDR_PRIx "\n",
@@ -289,6 +338,18 @@ static void pbl_display_regs_write(void *opaque, hwaddr offset,
     case DISP_INTCTRL:
         s->intctrl = value & INT_UPDATE_DONE;
         pbl_display_update_irq(s);
+        break;
+    case DISP_BL_RED:
+        s->bl_r = value & 0xFF;
+        s->redraw = true;
+        break;
+    case DISP_BL_GREEN:
+        s->bl_g = value & 0xFF;
+        s->redraw = true;
+        break;
+    case DISP_BL_BLUE:
+        s->bl_b = value & 0xFF;
+        s->redraw = true;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -401,6 +462,9 @@ static void pbl_display_realize(DeviceState *dev, Error **errp)
     qemu_console_resize(s->con, s->width, s->height);
 
     s->brightness = 0xFF;
+    s->bl_r = 0xFF;
+    s->bl_g = 0xFF;
+    s->bl_b = 0xFF;
     s->redraw = true;
 }
 
@@ -429,6 +493,9 @@ static void pbl_display_reset(DeviceState *dev)
     s->intstat = 0;
     s->intctrl = 0;
     s->brightness = 0xFF;
+    s->bl_r = 0xFF;
+    s->bl_g = 0xFF;
+    s->bl_b = 0xFF;
     s->redraw = true;
 
     if (s->fb) {
