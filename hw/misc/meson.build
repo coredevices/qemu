@@ -161,3 +161,31 @@ system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
 
 # HPPA devices
 system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
+
+system_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
+  'pebble_simple_uart.c',
+  'pebble_sysctrl.c',
+  'pebble_rtc.c',
+  'pebble_timer.c',
+  'pebble_extflash.c',
+  'pebble_touch.c',
+  'pebble_audio.c',
+))
+
+system_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
+  'pebble_null_input.c',
+))
+
+system_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
+  'stm32_pebble_rcc.c',
+  'stm32_pebble_clktree.c',
+  'stm32_pebble_common.c',
+  'stm32_pebble_exti.c',
+  'stm32_pebble_syscfg.c',
+  'stm32_pebble_adc.c',
+  'stm32_pebble_pwr.c',
+  'stm32_pebble_crc.c',
+  'stm32_pebble_flash.c',
+  'stm32_pebble_dummy.c',
+  'stm32_pebble_i2c.c',
+))

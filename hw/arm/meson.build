@@ -85,3 +85,16 @@ arm_common_ss.add(files('boot.c'))
 
 hw_arch += {'arm': arm_ss}
 hw_common_arch += {'arm': arm_common_ss}
+
+arm_common_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
+  'pebble.c',
+  'pebble_robert.c',
+  'pebble_silk.c',
+  'pebble_control.c',
+  'pebble_stm32f4xx_soc.c',
+  'pebble_stm32f2xx_soc.c',
+))
+
+arm_common_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
+  'pebble_generic.c',
+))

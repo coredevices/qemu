@@ -34,3 +34,8 @@ specific_ss.add(when: 'CONFIG_IBEX', if_true: files('ibex_timer.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_PWM', if_true: files('sifive_pwm.c'))
 
 specific_ss.add(when: 'CONFIG_AVR_TIMER16', if_true: files('avr_timer16.c'))
+
+system_ss.add(when: 'CONFIG_PEBBLE', if_true: files(
+  'stm32_pebble_tim.c',
+  'stm32_pebble_rtc.c',
+))

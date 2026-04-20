@@ -19,3 +19,5 @@ specific_ss.add(when: 'CONFIG_VHOST_USER_BLK', if_true: files('vhost-user-blk.c'
 system_ss.add(when: 'CONFIG_VHOST_USER_BLK', if_true: files('virtio-blk-common.c'))
 
 subdir('dataplane')
+
+system_ss.add(when: 'CONFIG_PEBBLE', if_true: files('pebble_mx25u.c'))

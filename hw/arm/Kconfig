@@ -692,3 +692,11 @@ config ARMSSE
     select UNIMP
     select SSE_COUNTER
     select SSE_TIMER
+
+config PEBBLE
+    bool
+    default y
+    depends on TCG && ARM
+    imply ARM_V7M
+    select ARM_V7M
+    select PFLASH_CFI02
