@@ -58,3 +58,62 @@ jobs:
           name: qemu-pebble-${{ matrix.name }}
           path: dist/
           if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/pebble-10.1'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check if VERSION changed
+        id: version_check
+        run: |
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.event.after }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="HEAD~1"
+          fi
+          if git diff --name-only "$BEFORE" "$AFTER" -- VERSION | grep -q '^VERSION$'; then
+            VERSION=$(tr -d '[:space:]' < VERSION)
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "VERSION bumped to $VERSION"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "VERSION not changed; skipping release"
+          fi
+
+      - name: Download all artifacts
+        if: steps.version_check.outputs.changed == 'true'
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      - name: Package artifacts
+        if: steps.version_check.outputs.changed == 'true'
+        run: |
+          mkdir -p release
+          cd artifacts
+          for dir in */; do
+            name="${dir%/}"
+            tar -czf "../release/${name}.tar.gz" -C "$dir" .
+          done
+
+      - name: Create release
+        if: steps.version_check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version_check.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --target "${GITHUB_SHA}" \
+            --generate-notes \
+            release/*
