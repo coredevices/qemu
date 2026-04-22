@@ -50,6 +50,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(PblAudio, PEBBLE_AUDIO)
 /* Drain timer interval: 10ms */
 #define DRAIN_INTERVAL_NS (10 * 1000 * 1000)
 
+/* Low-water mark: fire the BUFAVAIL IRQ only when the ring has at least this
+ * many free samples. Without this, the 10ms timer would trigger a refill every
+ * tick regardless of consumption, and firmware (which writes SPEAKER_REFILL_
+ * SAMPLES=512 per IRQ) would overrun the ring ~3x the host's 16 kHz drain
+ * rate, dropping samples and making playback sound sped up. Gating here paces
+ * the firmware against actual host consumption. */
+#define IRQ_FREE_THRESHOLD 1024
+
 struct PblAudio {
     SysBusDevice parent_obj;
 
@@ -76,6 +84,7 @@ struct PblAudio {
     /* Drain timer */
     QEMUTimer *drain_timer;
     bool running;
+    bool stopping;   /* Graceful teardown: drain ring then close voice */
 };
 
 static void pbl_audio_update_irq(PblAudio *s)
@@ -96,6 +105,25 @@ static void pbl_audio_ring_push(PblAudio *s, int16_t sample)
         s->ring_wr = (s->ring_wr + 1) % RING_BUF_SAMPLES;
         s->ring_count++;
     }
+}
+
+static void pbl_audio_teardown(PblAudio *s)
+{
+    s->running = false;
+    s->stopping = false;
+    timer_del(s->drain_timer);
+
+    if (s->voice) {
+        AUD_set_active_out(s->voice, 0);
+        AUD_close_out(&s->card, s->voice);
+        s->voice = NULL;
+    }
+
+    s->ring_wr = 0;
+    s->ring_rd = 0;
+    s->ring_count = 0;
+    s->intstat = 0;
+    pbl_audio_update_irq(s);
 }
 
 static void pbl_audio_drain_timer(void *opaque)
@@ -132,9 +160,19 @@ static void pbl_audio_drain_timer(void *opaque)
         }
     }
 
-    /* Fire IRQ to request more data from firmware */
-    s->intstat |= INT_BUFAVAIL;
-    pbl_audio_update_irq(s);
+    if (s->stopping) {
+        /* Graceful stop: once the ring has drained into the host voice,
+         * finish teardown. Avoids cutting off the last ~256 ms of audio. */
+        if (s->ring_count == 0) {
+            pbl_audio_teardown(s);
+            return;
+        }
+    } else if (pbl_audio_ring_free(s) >= IRQ_FREE_THRESHOLD) {
+        /* Fire IRQ only when there's meaningful room for a firmware refill.
+         * This backpressures the firmware to the host's consumption rate. */
+        s->intstat |= INT_BUFAVAIL;
+        pbl_audio_update_irq(s);
+    }
 
     /* Reschedule */
     timer_mod_anticipate_ns(s->drain_timer,
@@ -151,6 +189,13 @@ static void pbl_audio_out_cb(void *opaque, int free)
 
 static void pbl_audio_start(PblAudio *s)
 {
+    if (s->stopping) {
+        /* Restart before the previous stop's drain finished: cancel the
+         * teardown and keep the existing voice. */
+        s->stopping = false;
+        return;
+    }
+
     if (s->running) {
         return;
     }
@@ -190,22 +235,16 @@ static void pbl_audio_start(PblAudio *s)
 
 static void pbl_audio_stop(PblAudio *s)
 {
-    if (!s->running) {
+    if (!s->running || s->stopping) {
         return;
     }
 
-    s->running = false;
-    timer_del(s->drain_timer);
-
-    if (s->voice) {
-        AUD_set_active_out(s->voice, 0);
-        AUD_close_out(&s->card, s->voice);
-        s->voice = NULL;
-    }
-
-    s->ring_wr = 0;
-    s->ring_rd = 0;
-    s->ring_count = 0;
+    /* Mark for graceful teardown. The drain timer keeps running until the
+     * ring is empty, then calls pbl_audio_teardown(). Deassert BUFAVAIL so
+     * firmware doesn't keep refilling after CTRL=0. */
+    s->stopping = true;
+    s->intstat &= ~INT_BUFAVAIL;
+    pbl_audio_update_irq(s);
 }
 
 static uint64_t pbl_audio_read(void *opaque, hwaddr offset, unsigned size)
@@ -319,7 +358,7 @@ static void pbl_audio_reset(DeviceState *dev)
     PblAudio *s = PEBBLE_AUDIO(dev);
 
     if (s->running) {
-        pbl_audio_stop(s);
+        pbl_audio_teardown(s);
     }
 
     s->ctrl = 0;
