@@ -74,13 +74,17 @@ jobs:
 
       - name: Check if VERSION changed
         id: version_check
+        env:
+          PUSHED_COMMITS: ${{ toJSON(github.event.commits.*.id) }}
         run: |
-          BEFORE="${{ github.event.before }}"
-          AFTER="${{ github.event.after }}"
-          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            BEFORE="HEAD~1"
-          fi
-          if git diff --name-only "$BEFORE" "$AFTER" -- VERSION | grep -q '^VERSION$'; then
+          changed=false
+          for sha in $(echo "$PUSHED_COMMITS" | jq -r '.[]'); do
+            if git show --pretty=format: --name-only "$sha" | grep -qx 'VERSION'; then
+              changed=true
+              break
+            fi
+          done
+          if [ "$changed" = true ]; then
             VERSION=$(tr -d '[:space:]' < VERSION)
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
