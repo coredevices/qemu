@@ -2617,7 +2617,10 @@ void HELPER(v7m_msr)(CPUARMState *env, uint32_t maskreg, uint32_t val)
             if (!env->v7m.secure) {
                 return;
             }
-            env->v7m.basepri[M_REG_NS] = val & 0xff;
+            /* Unimplemented priority bits read as zero and ignore writes. */
+            env->v7m.basepri[M_REG_NS] =
+                val & MAKE_64BIT_MASK(8 - env->nvic->num_prio_bits,
+                                      env->nvic->num_prio_bits);
             return;
         case 0x93: /* FAULTMASK_NS */
             if (!arm_feature(env, ARM_FEATURE_M_MAIN)) {
@@ -2720,13 +2723,17 @@ void HELPER(v7m_msr)(CPUARMState *env, uint32_t maskreg, uint32_t val)
         if (!arm_feature(env, ARM_FEATURE_M_MAIN)) {
             goto bad_reg;
         }
-        env->v7m.basepri[env->v7m.secure] = val & 0xff;
+        /* Unimplemented priority bits read as zero and ignore writes. */
+        env->v7m.basepri[env->v7m.secure] =
+            val & MAKE_64BIT_MASK(8 - env->nvic->num_prio_bits,
+                                  env->nvic->num_prio_bits);
         break;
     case 18: /* BASEPRI_MAX */
         if (!arm_feature(env, ARM_FEATURE_M_MAIN)) {
             goto bad_reg;
         }
-        val &= 0xff;
+        val &= MAKE_64BIT_MASK(8 - env->nvic->num_prio_bits,
+                               env->nvic->num_prio_bits);
         if (val != 0 && (val < env->v7m.basepri[env->v7m.secure]
                          || env->v7m.basepri[env->v7m.secure] == 0)) {
             env->v7m.basepri[env->v7m.secure] = val;

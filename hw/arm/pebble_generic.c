@@ -121,6 +121,13 @@ static void pbl_generic_init(MachineState *machine)
     object_initialize_child(OBJECT(s), "armv7m", &s->armv7m, TYPE_ARMV7M);
     armv7m = DEVICE(&s->armv7m);
     qdev_prop_set_uint32(armv7m, "num-irq", PBL_NUM_IRQS);
+    /* Pebble firmware assumes 3 priority bits (__NVIC_PRIO_BITS=3), matching
+     * the nRF52/STM32F4 watches. QEMU defaults to 8 for ARMv7+, which means
+     * CMSIS-shifted IRQ priorities like 0xA0 are numerically less than
+     * BASEPRI=0xBF and would preempt critical sections — leaking
+     * uxCriticalNesting via portCLEAR_INTERRUPT_MASK_FROM_ISR.
+     */
+    qdev_prop_set_uint8(armv7m, "num-prio-bits", 3);
     qdev_prop_set_string(armv7m, "cpu-type", cfg->cpu_type);
     qdev_connect_clock_in(armv7m, "cpuclk", s->sysclk);
     qdev_connect_clock_in(armv7m, "refclk", s->refclk);
