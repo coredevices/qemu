@@ -21,9 +21,6 @@
 #include "hw/irq.h"
 #include "hw/sysbus.h"
 
-#include <time.h>
-#include <stdlib.h>
-
 #define TYPE_PEBBLE_GENERIC_RTC "pebble-rtc"
 OBJECT_DECLARE_SIMPLE_TYPE(PblRtc, PEBBLE_GENERIC_RTC)
 
@@ -59,41 +56,12 @@ static void pbl_rtc_update_irq(PblRtc *s)
                           (s->ctrl & CTRL_ALARM_IRQ));
 }
 
-/* Return the local-time UTC offset in seconds, cached on first call.
- *
- * Honors the TZ_OFFSET_SEC environment variable (seconds east of UTC) when set
- * — this matches the stm32 Pebble RTC and is how the browser/JS build injects
- * the user's timezone. When unset, falls back to the host's detected local
- * offset via localtime_r(). */
-static int64_t pbl_rtc_tz_offset(void)
-{
-    static int64_t offset_sec;
-    static bool cached;
-
-    if (!cached) {
-        const char *env = getenv("TZ_OFFSET_SEC");
-        if (env) {
-            offset_sec = (int64_t)atoll(env);
-        } else {
-            time_t now = time(NULL);
-            struct tm lt;
-            if (localtime_r(&now, &lt)) {
-                offset_sec = (int64_t)lt.tm_gmtoff;
-            }
-        }
-        cached = true;
-    }
-    return offset_sec;
-}
-
-/* Return "local time as a unix timestamp". Pebble firmware stores wall-clock
- * time in this form, so the value read here is shifted by the local UTC
- * offset — a guest that applies no further timezone conversion will still
- * display the user's local wall-clock time. */
+/* Return the host wall-clock time as a UTC unix timestamp. Guests running on
+ * the generic Pebble machine are expected to apply their own timezone
+ * conversion. */
 static uint64_t pbl_rtc_get_time(void)
 {
-    uint64_t utc = (uint64_t)qemu_clock_get_ms(QEMU_CLOCK_HOST) / 1000;
-    return utc + pbl_rtc_tz_offset();
+    return (uint64_t)qemu_clock_get_ms(QEMU_CLOCK_HOST) / 1000;
 }
 
 static uint64_t pbl_rtc_read(void *opaque, hwaddr offset, unsigned size)
