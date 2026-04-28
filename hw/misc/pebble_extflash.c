@@ -23,6 +23,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/notify.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/sysbus.h"
@@ -30,6 +31,7 @@
 #include "hw/qdev-properties-system.h"
 #include "hw/block/block.h"
 #include "system/block-backend.h"
+#include "system/runstate.h"
 
 #define TYPE_PEBBLE_EXTFLASH "pebble-extflash"
 OBJECT_DECLARE_SIMPLE_TYPE(PblExtFlash, PEBBLE_EXTFLASH)
@@ -51,8 +53,11 @@ struct PblExtFlash {
     BlockBackend *blk;
     uint8_t *storage;
     uint32_t size;
+    uint32_t backed_size;
 
     uint32_t ctrl;
+
+    Notifier shutdown_notifier;
 };
 
 static uint64_t pbl_extflash_regs_read(void *opaque, hwaddr offset,
@@ -100,6 +105,19 @@ static const MemoryRegionOps pbl_extflash_regs_ops = {
     .valid.max_access_size = 4,
 };
 
+static void pbl_extflash_shutdown_notify(Notifier *n, void *data)
+{
+    PblExtFlash *s = container_of(n, PblExtFlash, shutdown_notifier);
+
+    if (!s->blk || !blk_is_writable(s->blk) || s->backed_size == 0) {
+        return;
+    }
+    if (blk_pwrite(s->blk, 0, s->backed_size, s->storage, 0) < 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pebble-extflash: failed to flush storage on shutdown\n");
+    }
+}
+
 static void pbl_extflash_realize(DeviceState *dev, Error **errp)
 {
     PblExtFlash *s = PEBBLE_EXTFLASH(dev);
@@ -127,7 +145,14 @@ static void pbl_extflash_realize(DeviceState *dev, Error **errp)
                 error_setg(errp, "pebble-extflash: failed to read drive");
                 return;
             }
+            s->backed_size = blk_size;
         }
+
+        /* Persist guest writes back to the file before bdrv_close_all()
+         * tears the block layer down. Fires for graceful shutdown,
+         * `(qemu) quit`, and SIGINT (Ctrl+C). */
+        s->shutdown_notifier.notify = pbl_extflash_shutdown_notify;
+        qemu_register_shutdown_notifier(&s->shutdown_notifier);
     }
 
     s->ctrl = 1;  /* XIP enabled by default */
