@@ -38,6 +38,7 @@ cd "${BUILD_DIR}"
     --target-list=arm-softmmu \
     --python="${PYTHON}" \
     --enable-sdl \
+    --disable-curses \
     --disable-gnutls \
     --disable-libssh \
     --disable-libusb \
