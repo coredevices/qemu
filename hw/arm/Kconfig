@@ -700,3 +700,4 @@ config PEBBLE
     imply ARM_V7M
     select ARM_V7M
     select PFLASH_CFI02
+    select SSI
