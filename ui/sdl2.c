@@ -39,11 +39,9 @@ static int sdl2_num_outputs;
 static struct sdl2_console *sdl2_console;
 
 static SDL_Surface *guest_sprite_surface;
-static int gui_grab; /* if true, all keyboard/mouse events are grabbed */
 static bool alt_grab;
 static bool ctrl_grab;
 
-static int gui_saved_grab;
 static int gui_fullscreen;
 static int gui_grab_code = KMOD_LALT | KMOD_LCTRL;
 static SDL_Cursor *sdl_cursor_normal;
@@ -171,22 +169,6 @@ static void sdl_update_caption(struct sdl2_console *scon)
 
     if (!runstate_is_running()) {
         status = " [Stopped]";
-    } else if (gui_grab) {
-        if (alt_grab) {
-#ifdef CONFIG_DARWIN
-            status = " - Press ⌃⌥⇧G to exit grab";
-#else
-            status = " - Press Ctrl-Alt-Shift-G to exit grab";
-#endif
-        } else if (ctrl_grab) {
-            status = " - Press Right-Ctrl-G to exit grab";
-        } else {
-#ifdef CONFIG_DARWIN
-            status = " - Press ⌃⌥G to exit grab";
-#else
-            status = " - Press Ctrl-Alt-G to exit grab";
-#endif
-        }
     }
 
     if (qemu_name) {
@@ -203,20 +185,6 @@ static void sdl_update_caption(struct sdl2_console *scon)
     }
 }
 
-static void sdl_hide_cursor(struct sdl2_console *scon)
-{
-    if (scon->opts->has_show_cursor && scon->opts->show_cursor) {
-        return;
-    }
-
-    SDL_ShowCursor(SDL_DISABLE);
-    SDL_SetCursor(sdl_cursor_hidden);
-
-    if (!qemu_input_is_absolute(scon->dcl.con)) {
-        SDL_SetRelativeMouseMode(SDL_TRUE);
-    }
-}
-
 static void sdl_show_cursor(struct sdl2_console *scon)
 {
     if (scon->opts->has_show_cursor && scon->opts->show_cursor) {
@@ -228,7 +196,7 @@ static void sdl_show_cursor(struct sdl2_console *scon)
     }
 
     if (guest_cursor &&
-        (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {
+        (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {
         SDL_SetCursor(guest_sprite);
     } else {
         SDL_SetCursor(sdl_cursor_normal);
@@ -237,52 +205,12 @@ static void sdl_show_cursor(struct sdl2_console *scon)
     SDL_ShowCursor(SDL_ENABLE);
 }
 
-static void sdl_grab_start(struct sdl2_console *scon)
-{
-    QemuConsole *con = scon ? scon->dcl.con : NULL;
-
-    if (!con || !qemu_console_is_graphic(con)) {
-        return;
-    }
-    /*
-     * If the application is not active, do not try to enter grab state. This
-     * prevents 'SDL_WM_GrabInput(SDL_GRAB_ON)' from blocking all the
-     * application (SDL bug).
-     */
-    if (!(SDL_GetWindowFlags(scon->real_window) & SDL_WINDOW_INPUT_FOCUS)) {
-        return;
-    }
-    if (guest_cursor) {
-        SDL_SetCursor(guest_sprite);
-        if (!qemu_input_is_absolute(scon->dcl.con) && !absolute_enabled) {
-            SDL_WarpMouseInWindow(scon->real_window, guest_x, guest_y);
-        }
-    } else {
-        sdl_hide_cursor(scon);
-    }
-    SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
-    gui_grab = 1;
-    sdl_update_caption(scon);
-}
-
-static void sdl_grab_end(struct sdl2_console *scon)
-{
-    SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
-    gui_grab = 0;
-    sdl_show_cursor(scon);
-    sdl_update_caption(scon);
-}
-
 static void absolute_mouse_grab(struct sdl2_console *scon)
 {
     int mouse_x, mouse_y;
     int scr_w, scr_h;
     SDL_GetMouseState(&mouse_x, &mouse_y);
     SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
-    if (mouse_x > 0 && mouse_x < scr_w - 1 &&
-        mouse_y > 0 && mouse_y < scr_h - 1) {
-        sdl_grab_start(scon);
-    }
 }
 
 static void sdl_mouse_mode_change(Notifier *notify, void *data)
@@ -294,9 +222,6 @@ static void sdl_mouse_mode_change(Notifier *notify, void *data)
             absolute_mouse_grab(&sdl2_console[0]);
         }
     } else if (absolute_enabled) {
-        if (!gui_fullscreen) {
-            sdl_grab_end(&sdl2_console[0]);
-        }
         absolute_enabled = 0;
     }
 }
@@ -344,12 +269,7 @@ static void toggle_full_screen(struct sdl2_console *scon)
     if (gui_fullscreen) {
         SDL_SetWindowFullscreen(scon->real_window,
                                 SDL_WINDOW_FULLSCREEN_DESKTOP);
-        gui_saved_grab = gui_grab;
-        sdl_grab_start(scon);
     } else {
-        if (!gui_saved_grab) {
-            sdl_grab_end(scon);
-        }
         SDL_SetWindowFullscreen(scon->real_window, 0);
     }
     sdl2_redraw(scon);
@@ -391,9 +311,6 @@ static void handle_keydown(SDL_Event *ev)
         case SDL_SCANCODE_7:
         case SDL_SCANCODE_8:
         case SDL_SCANCODE_9:
-            if (gui_grab) {
-                sdl_grab_end(scon);
-            }
 
             win = ev->key.keysym.scancode - SDL_SCANCODE_1;
             if (win < sdl2_num_outputs) {
@@ -415,11 +332,6 @@ static void handle_keydown(SDL_Event *ev)
             break;
         case SDL_SCANCODE_G:
             scon->gui_keysym = true;
-            if (!gui_grab) {
-                sdl_grab_start(scon);
-            } else if (!gui_fullscreen) {
-                sdl_grab_end(scon);
-            }
             break;
         case SDL_SCANCODE_U:
             sdl2_window_resize(scon);
@@ -486,7 +398,6 @@ static void handle_textinput(SDL_Event *ev)
 
 static void handle_mousemotion(SDL_Event *ev)
 {
-    int max_x, max_y;
     struct sdl2_console *scon = get_scon_from_window(ev->motion.windowID);
     int scr_w, scr_h, surf_w, surf_h, x, y, dx, dy;
 
@@ -495,27 +406,13 @@ static void handle_mousemotion(SDL_Event *ev)
     }
 
     SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
-    if (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
-        max_x = scr_w - 1;
-        max_y = scr_h - 1;
-        if (gui_grab && !gui_fullscreen
-            && (ev->motion.x == 0 || ev->motion.y == 0 ||
-                ev->motion.x == max_x || ev->motion.y == max_y)) {
-            sdl_grab_end(scon);
-        }
-        if (!gui_grab &&
-            (ev->motion.x > 0 && ev->motion.x < max_x &&
-             ev->motion.y > 0 && ev->motion.y < max_y)) {
-            sdl_grab_start(scon);
-        }
-    }
     surf_w = surface_width(scon->surface);
     surf_h = surface_height(scon->surface);
     x = (int64_t)ev->motion.x * surf_w / scr_w;
     y = (int64_t)ev->motion.y * surf_h / scr_h;
     dx = (int64_t)ev->motion.xrel * surf_w / scr_w;
     dy = (int64_t)ev->motion.yrel * surf_h / scr_h;
-    if (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
+    if (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
         sdl_send_mouse_event(scon, dx, dy, x, y, ev->motion.state);
     }
 }
@@ -536,12 +433,7 @@ static void handle_mousebutton(SDL_Event *ev)
     x = (int64_t)bev->x * surface_width(scon->surface) / scr_w;
     y = (int64_t)bev->y * surface_height(scon->surface) / scr_h;
 
-    if (!gui_grab && !qemu_input_is_absolute(scon->dcl.con)) {
-        if (ev->type == SDL_MOUSEBUTTONUP && bev->button == SDL_BUTTON_LEFT) {
-            /* start grabbing all events */
-            sdl_grab_start(scon);
-        }
-    } else {
+    if (qemu_input_is_absolute(scon->dcl.con)) {
         if (ev->type == SDL_MOUSEBUTTONDOWN) {
             buttonstate |= SDL_BUTTON(bev->button);
         } else {
@@ -605,7 +497,7 @@ static void handle_windowevent(SDL_Event *ev)
     case SDL_WINDOWEVENT_FOCUS_GAINED:
         /* fall through */
     case SDL_WINDOWEVENT_ENTER:
-        if (!gui_grab && (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {
+        if ((qemu_input_is_absolute(scon->dcl.con) || absolute_enabled)) {
             absolute_mouse_grab(scon);
         }
         /* If a new console window opened using a hotkey receives the
@@ -618,9 +510,6 @@ static void handle_windowevent(SDL_Event *ev)
         scon->ignore_hotkeys = get_mod_state();
         break;
     case SDL_WINDOWEVENT_FOCUS_LOST:
-        if (gui_grab && !gui_fullscreen) {
-            sdl_grab_end(scon);
-        }
         break;
     case SDL_WINDOWEVENT_RESTORED:
         update_displaychangelistener(&scon->dcl, GUI_REFRESH_INTERVAL_DEFAULT);
@@ -732,14 +621,12 @@ static void sdl_mouse_warp(DisplayChangeListener *dcl,
         if (!guest_cursor) {
             sdl_show_cursor(scon);
         }
-        if (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
+        if (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
             SDL_SetCursor(guest_sprite);
             if (!qemu_input_is_absolute(scon->dcl.con) && !absolute_enabled) {
                 SDL_WarpMouseInWindow(scon->real_window, x, y);
             }
         }
-    } else if (gui_grab) {
-        sdl_hide_cursor(scon);
     }
     guest_cursor = on;
     guest_x = x, guest_y = y;
@@ -772,7 +659,7 @@ static void sdl_mouse_define(DisplayChangeListener *dcl,
         return;
     }
     if (guest_cursor &&
-        (gui_grab || qemu_input_is_absolute(dcl->con) || absolute_enabled)) {
+        (qemu_input_is_absolute(dcl->con) || absolute_enabled)) {
         SDL_SetCursor(guest_sprite);
     }
 }
@@ -944,10 +831,6 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
 
     sdl_cursor_hidden = SDL_CreateCursor(&data, &data, 8, 1, 0, 0);
     sdl_cursor_normal = SDL_GetCursor();
-
-    if (gui_fullscreen) {
-        sdl_grab_start(&sdl2_console[0]);
-    }
 
     atexit(sdl_cleanup);
 
