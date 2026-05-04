@@ -51,6 +51,7 @@ cd "${BUILD_DIR}"
     --disable-vnc-jpeg \
     --disable-gcrypt \
     --disable-nettle \
+    --disable-sndio \
     --disable-werror 2>&1
 
 NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
