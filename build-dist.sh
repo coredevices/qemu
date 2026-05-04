@@ -69,6 +69,7 @@ rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}/bin"
 
 cp "${BUILD_DIR}/qemu-system-arm" "${DIST_DIR}/bin/qemu-pebble"
+strip "${DIST_DIR}/bin/qemu-pebble"
 
 if [ "$OS" = "Darwin" ] && command -v brew &>/dev/null; then
     mkdir -p "${DIST_DIR}/lib"
