@@ -38,21 +38,122 @@ cd "${BUILD_DIR}"
     --target-list=arm-softmmu \
     --python="${PYTHON}" \
     --enable-sdl \
+    --disable-tools \
+    --disable-docs \
+    --disable-guest-agent \
+    --disable-werror \
+    \
+    `# UI / display backends — keep SDL, Cocoa, VNC` \
     --disable-curses \
+    --disable-gtk \
+    --disable-vte \
+    --disable-vnc-jpeg \
+    --disable-spice \
+    --disable-spice-protocol \
+    --disable-dbus-display \
+    --disable-sdl-image \
+    --disable-opengl \
+    --disable-virglrenderer \
+    --disable-rutabaga-gfx \
+    --disable-pvg \
+    \
+    `# Crypto / TLS / auth — Pebble has no networking` \
     --disable-gnutls \
+    --disable-gcrypt \
+    --disable-nettle \
     --disable-libssh \
+    --disable-auth-pam \
+    --disable-libcbor \
+    --disable-crypto-afalg \
+    \
+    `# USB / smartcard / security devices` \
     --disable-libusb \
     --disable-usb-redir \
+    --disable-libudev \
+    --disable-smartcard \
+    --disable-u2f \
+    --disable-canokey \
+    --disable-tpm \
+    --disable-brlapi \
+    \
+    `# Network backends — Pebble has no NIC` \
     --disable-slirp \
+    --disable-vde \
+    --disable-vmnet \
+    --disable-netmap \
+    --disable-l2tpv3 \
+    --disable-af-xdp \
+    --disable-bpf \
+    \
+    `# Block / image formats — Pebble has no disk` \
+    --disable-bzip2 \
+    --disable-lzfse \
+    --disable-lzo \
+    --disable-snappy \
     --disable-zstd \
+    --disable-qatzip \
+    --disable-qpl \
+    --disable-bochs \
+    --disable-cloop \
+    --disable-dmg \
+    --disable-parallels \
+    --disable-qcow1 \
+    --disable-qed \
+    --disable-vdi \
+    --disable-vhdx \
+    --disable-vmdk \
+    --disable-vpc \
+    --disable-vvfat \
+    --disable-blkio \
+    --disable-curl \
+    --disable-glusterfs \
+    --disable-libiscsi \
+    --disable-libnfs \
+    --disable-rbd \
+    --disable-libpmem \
+    --disable-libdaxctl \
+    --disable-replication \
+    --disable-fuse \
+    --disable-fuse-lseek \
+    --disable-virtfs \
+    --disable-attr \
+    --disable-mpath \
+    --disable-linux-aio \
+    --disable-linux-io-uring \
+    \
+    `# Virtio / vhost — not used by Pebble machines` \
+    --disable-vhost-crypto \
+    --disable-vhost-kernel \
+    --disable-vhost-net \
+    --disable-vhost-user \
+    --disable-vhost-user-blk-server \
+    --disable-vhost-vdpa \
+    --disable-libvduse \
+    --disable-vduse-blk-export \
+    --disable-hv-balloon \
+    \
+    `# Accelerators — TCG only for Cortex-M` \
+    --disable-kvm \
+    --disable-hvf \
+    --disable-whpx \
+    --disable-xen \
+    \
+    `# Misc unused subsystems` \
     --disable-png \
     --disable-capstone \
     --disable-gio \
-    --disable-vnc-jpeg \
-    --disable-gcrypt \
-    --disable-nettle \
-    --disable-sndio \
-    --disable-werror 2>&1
+    --disable-numa \
+    --disable-rdma \
+    --disable-seccomp \
+    --disable-selinux \
+    --disable-libdw \
+    --disable-libkeyutils \
+    --disable-multiprocess \
+    --disable-vfio-user-server \
+    --disable-modules \
+    --disable-plugins \
+    --disable-rust \
+    --disable-sndio 2>&1
 
 NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 ninja -j"${NPROC}" qemu-system-arm 2>&1
