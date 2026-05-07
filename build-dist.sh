@@ -139,7 +139,6 @@ cd "${BUILD_DIR}"
     --disable-xen \
     \
     `# Misc unused subsystems` \
-    --disable-png \
     --disable-capstone \
     --disable-gio \
     --disable-numa \
