@@ -94,3 +94,4 @@ endif
 subdir('descriptors')
 subdir('dtb')
 subdir('keymaps')
+subdir('pebble-decorations')

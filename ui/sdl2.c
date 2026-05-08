@@ -24,11 +24,13 @@
 /* Ported SDL 1.2 code to 2.0 by Dave Airlie. */
 
 #include "qemu/osdep.h"
+#include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/cutils.h"
 #include "ui/console.h"
 #include "ui/input.h"
 #include "ui/sdl2.h"
+#include "ui/sdl2-decoration.h"
 #include "system/runstate.h"
 #include "system/runstate-action.h"
 #include "system/system.h"
@@ -74,9 +76,88 @@ static struct sdl2_console *get_scon_from_window(uint32_t window_id)
     return NULL;
 }
 
+static SDL_HitTestResult sdl_decoration_hit_test(SDL_Window *win,
+                                                 const SDL_Point *pt,
+                                                 void *data)
+{
+    struct sdl2_console *scon = data;
+    if (!scon->decoration) {
+        return SDL_HITTEST_NORMAL;
+    }
+    SDL_Rect dst = scon->decoration->dst_rect;
+    if (pt->x >= dst.x && pt->x < dst.x + dst.w &&
+        pt->y >= dst.y && pt->y < dst.y + dst.h) {
+        return SDL_HITTEST_NORMAL;
+    }
+    if (sdl2_decoration_button_at(scon, pt->x, pt->y) >= 0) {
+        return SDL_HITTEST_NORMAL;
+    }
+    if (sdl2_decoration_is_close(scon, pt->x, pt->y)) {
+        return SDL_HITTEST_NORMAL;
+    }
+    return SDL_HITTEST_DRAGGABLE;
+}
+
+#include <SDL_shape.h>
+#include <SDL_syswm.h>
+
+/*
+ * Defined in SDL3 / sdl2-compat (>= ~2.30); fall back to the SDL3 numeric
+ * value when the header doesn't expose it. Ignored by libsdl.org SDL2 —
+ * macOS gets per-pixel transparency via the dedicated Cocoa overlay path
+ * in ui/sdl2-cocoa.m instead.
+ */
+#ifndef SDL_WINDOW_TRANSPARENT
+# define SDL_WINDOW_TRANSPARENT 0x40000000
+#endif
+
+#ifndef __APPLE__
+/*
+ * Build a binary alpha mask (every pixel either fully opaque or fully
+ * transparent) sized to the given window dimensions. Anti-aliased edge
+ * pixels in the source are pushed to opaque or transparent depending on a
+ * threshold so the resulting shape mask doesn't have a halo of partial-
+ * alpha pixels around the watch silhouette.
+ *
+ * Linux/X11 only — macOS uses the Cocoa overlay path instead.
+ */
+static SDL_Surface *build_shape_mask(SDL_Surface *src, int w, int h,
+                                     uint8_t alpha_threshold)
+{
+    SDL_Surface *dst = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32,
+                                                      SDL_PIXELFORMAT_ARGB8888);
+    if (!dst) {
+        return NULL;
+    }
+    SDL_Rect dst_rect = { 0, 0, w, h };
+    if (SDL_BlitScaled(src, NULL, dst, &dst_rect) != 0) {
+        SDL_FreeSurface(dst);
+        return NULL;
+    }
+
+    if (SDL_LockSurface(dst) == 0) {
+        const uint32_t opaque = SDL_MapRGBA(dst->format, 0, 0, 0, 255);
+        const uint32_t clear  = SDL_MapRGBA(dst->format, 0, 0, 0, 0);
+        for (int y = 0; y < dst->h; y++) {
+            uint32_t *row = (uint32_t *)((uint8_t *)dst->pixels + y * dst->pitch);
+            for (int x = 0; x < dst->w; x++) {
+                uint8_t a;
+                SDL_GetRGBA(row[x], dst->format,
+                            &(uint8_t){0}, &(uint8_t){0}, &(uint8_t){0}, &a);
+                row[x] = (a >= alpha_threshold) ? opaque : clear;
+            }
+        }
+        SDL_UnlockSurface(dst);
+    }
+    return dst;
+}
+#endif /* !__APPLE__ */
+
 void sdl2_window_create(struct sdl2_console *scon)
 {
     int flags = 0;
+    int win_w, win_h;
+    bool decorated = scon->decoration != NULL;
 
     if (!scon->surface) {
         return;
@@ -85,6 +166,8 @@ void sdl2_window_create(struct sdl2_console *scon)
 
     if (gui_fullscreen) {
         flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+    } else if (decorated) {
+        flags |= SDL_WINDOW_BORDERLESS;
     } else {
         flags |= SDL_WINDOW_RESIZABLE;
     }
@@ -97,11 +180,95 @@ void sdl2_window_create(struct sdl2_console *scon)
     }
 #endif
 
-    scon->real_window = SDL_CreateWindow("", SDL_WINDOWPOS_UNDEFINED,
-                                         SDL_WINDOWPOS_UNDEFINED,
-                                         surface_width(scon->surface),
-                                         surface_height(scon->surface),
-                                         flags);
+    if (decorated) {
+        sdl2_decoration_compute_layout(scon,
+                                       surface_width(scon->surface),
+                                       surface_height(scon->surface));
+        win_w = scon->decoration->win_w;
+        win_h = scon->decoration->win_h;
+    } else {
+        win_w = surface_width(scon->surface);
+        win_h = surface_height(scon->surface);
+    }
+
+    scon->real_window = NULL;
+#ifndef __APPLE__
+    if (decorated) {
+        /* Linux/X11: SDL_CreateShapedWindow + a binary alpha mask clip
+         * the watch silhouette at the WM level. Best-effort: if the host
+         * WM doesn't support shape masks (Wayland, some compositors)
+         * SDL_CreateShapedWindow returns NULL and we fall through to a
+         * plain borderless window below. */
+        scon->real_window = SDL_CreateShapedWindow(
+            "", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+            win_w, win_h, flags | SDL_WINDOW_TRANSPARENT);
+        if (scon->real_window && scon->decoration_pending_surface) {
+            /* The decoration surface was already binarized at load time
+             * (sdl2-decoration.c). Any threshold > 0 will pull through the
+             * same pixels here. Use 1 to be tolerant of scaling rounding. */
+            SDL_Surface *mask = build_shape_mask(
+                scon->decoration_pending_surface, win_w, win_h, 1);
+            if (mask) {
+                /* The PNG has alpha=0 over the watch screen area so that the
+                 * guest framebuffer can be composited there. The shape mask
+                 * must include the screen area or the shaped window will
+                 * clip the framebuffer away. */
+                SDL_Rect dst = scon->decoration->dst_rect;
+                uint32_t opaque = SDL_MapRGBA(mask->format, 0, 0, 0, 255);
+                /* Close button hot-zone: ensure the shape mask is opaque
+                 * over the icon so the click reaches our handler. */
+                const SDL_Rect *cr_src =
+                    &scon->decoration->preset->close_rect;
+                if (cr_src->w > 0 && cr_src->h > 0) {
+                    SDL_Rect cr = {
+                        .x = (int)(cr_src->x * scon->decoration->scale_x + 0.5),
+                        .y = (int)(cr_src->y * scon->decoration->scale_y + 0.5),
+                        .w = (int)(cr_src->w * scon->decoration->scale_x + 0.5),
+                        .h = (int)(cr_src->h * scon->decoration->scale_y + 0.5),
+                    };
+                    SDL_FillRect(mask, &cr, opaque);
+                }
+                if (scon->decoration->preset->screen_round &&
+                    SDL_LockSurface(mask) == 0) {
+                    /* Fill the inscribed circle so the framebuffer's
+                     * rectangular corners stay clipped by the shape. */
+                    int cx = dst.x + dst.w / 2;
+                    int cy = dst.y + dst.h / 2;
+                    int r  = (dst.w < dst.h ? dst.w : dst.h) / 2;
+                    int r2 = r * r;
+                    for (int y = dst.y; y < dst.y + dst.h; y++) {
+                        if (y < 0 || y >= mask->h) continue;
+                        uint32_t *row = (uint32_t *)((uint8_t *)mask->pixels +
+                                                     y * mask->pitch);
+                        int dy = y - cy;
+                        for (int x = dst.x; x < dst.x + dst.w; x++) {
+                            if (x < 0 || x >= mask->w) continue;
+                            int dx = x - cx;
+                            if (dx * dx + dy * dy <= r2) {
+                                row[x] = opaque;
+                            }
+                        }
+                    }
+                    SDL_UnlockSurface(mask);
+                } else {
+                    SDL_FillRect(mask, &dst, opaque);
+                }
+                SDL_WindowShapeMode mode = {
+                    .mode = ShapeModeBinarizeAlpha,
+                    .parameters.binarizationCutoff = 1,
+                };
+                SDL_SetWindowShape(scon->real_window, mask, &mode);
+                SDL_FreeSurface(mask);
+            }
+        }
+    }
+#endif /* !__APPLE__ */
+    if (!scon->real_window) {
+        Uint32 fb_flags = decorated ? (flags | SDL_WINDOW_TRANSPARENT) : flags;
+        scon->real_window = SDL_CreateWindow("", SDL_WINDOWPOS_UNDEFINED,
+                                             SDL_WINDOWPOS_UNDEFINED,
+                                             win_w, win_h, fb_flags);
+    }
     if (scon->opengl) {
         const char *driver = "opengl";
 
@@ -115,8 +282,27 @@ void sdl2_window_create(struct sdl2_console *scon)
         scon->winctx = SDL_GL_CreateContext(scon->real_window);
         SDL_GL_SetSwapInterval(0);
     } else {
-        /* The SDL renderer is only used by sdl2-2D, when OpenGL is disabled */
-        scon->real_renderer = SDL_CreateRenderer(scon->real_window, -1, 0);
+        bool skip_renderer = false;
+#ifdef __APPLE__
+        /* macOS decorated path drives the contentView's CALayer directly
+         * (see ui/sdl2-cocoa.m); creating an SDL renderer would attach a
+         * CAMetalLayer that obscures our layer's alpha. */
+        skip_renderer = decorated;
+#endif
+        if (!skip_renderer) {
+            /* The SDL renderer is only used by sdl2-2D, when OpenGL is
+             * disabled. */
+            scon->real_renderer =
+                SDL_CreateRenderer(scon->real_window, -1, 0);
+        }
+    }
+    if (decorated) {
+        SDL_SetWindowHitTest(scon->real_window, sdl_decoration_hit_test, scon);
+#ifdef __APPLE__
+        if (!sdl2_cocoa_install(scon->real_window)) {
+            error_report("decoration: Cocoa overlay install failed");
+        }
+#endif
     }
     sdl_update_caption(scon);
 }
@@ -127,6 +313,13 @@ void sdl2_window_destroy(struct sdl2_console *scon)
         return;
     }
 
+#ifdef __APPLE__
+    if (scon->decoration) {
+        /* Restore the original SDL contentView before SDL_DestroyWindow
+         * tears it down, otherwise we'd leak our overlay view. */
+        sdl2_cocoa_uninstall(scon->real_window);
+    }
+#endif
     if (scon->winctx) {
         SDL_GL_DeleteContext(scon->winctx);
         scon->winctx = NULL;
@@ -142,6 +335,17 @@ void sdl2_window_destroy(struct sdl2_console *scon)
 void sdl2_window_resize(struct sdl2_console *scon)
 {
     if (!scon->real_window) {
+        return;
+    }
+
+    if (scon->decoration) {
+        /* Window dimensions follow the framebuffer; the PNG re-stretches. */
+        sdl2_decoration_compute_layout(scon,
+                                       surface_width(scon->surface),
+                                       surface_height(scon->surface));
+        SDL_SetWindowSize(scon->real_window,
+                          scon->decoration->win_w,
+                          scon->decoration->win_h);
         return;
     }
 
@@ -405,13 +609,22 @@ static void handle_mousemotion(SDL_Event *ev)
         return;
     }
 
-    SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
     surf_w = surface_width(scon->surface);
     surf_h = surface_height(scon->surface);
-    x = (int64_t)ev->motion.x * surf_w / scr_w;
-    y = (int64_t)ev->motion.y * surf_h / scr_h;
-    dx = (int64_t)ev->motion.xrel * surf_w / scr_w;
-    dy = (int64_t)ev->motion.yrel * surf_h / scr_h;
+
+    if (scon->decoration) {
+        if (!sdl2_decoration_map_mouse(scon, ev->motion.x, ev->motion.y,
+                                       ev->motion.xrel, ev->motion.yrel,
+                                       surf_w, surf_h, &x, &y, &dx, &dy)) {
+            return;
+        }
+    } else {
+        SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
+        x = (int64_t)ev->motion.x * surf_w / scr_w;
+        y = (int64_t)ev->motion.y * surf_h / scr_h;
+        dx = (int64_t)ev->motion.xrel * surf_w / scr_w;
+        dy = (int64_t)ev->motion.yrel * surf_h / scr_h;
+    }
     if (qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
         sdl_send_mouse_event(scon, dx, dy, x, y, ev->motion.state);
     }
@@ -422,16 +635,57 @@ static void handle_mousebutton(SDL_Event *ev)
     int buttonstate = SDL_GetMouseState(NULL, NULL);
     SDL_MouseButtonEvent *bev;
     struct sdl2_console *scon = get_scon_from_window(ev->button.windowID);
-    int scr_w, scr_h, x, y;
+    int scr_w, scr_h, x, y, dx, dy;
+    int surf_w, surf_h;
 
     if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
         return;
     }
 
     bev = &ev->button;
-    SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
-    x = (int64_t)bev->x * surface_width(scon->surface) / scr_w;
-    y = (int64_t)bev->y * surface_height(scon->surface) / scr_h;
+    surf_w = surface_width(scon->surface);
+    surf_h = surface_height(scon->surface);
+
+    if (scon->decoration && bev->button == SDL_BUTTON_LEFT) {
+        /* Host close button: trigger the same shutdown path as the
+         * window manager's close (X). */
+        if (ev->type == SDL_MOUSEBUTTONDOWN &&
+            sdl2_decoration_is_close(scon, bev->x, bev->y)) {
+            if (qemu_console_is_graphic(scon->dcl.con) &&
+                (!scon->opts->has_window_close || scon->opts->window_close)) {
+                shutdown_action = SHUTDOWN_ACTION_POWEROFF;
+                qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
+            }
+            return;
+        }
+        /* Watch buttons drawn on the bezel: synthesize a Pebble keypress. */
+        if (ev->type == SDL_MOUSEBUTTONDOWN) {
+            int btn = sdl2_decoration_button_at(scon, bev->x, bev->y);
+            if (btn >= 0) {
+                scon->decoration->active_button = btn;
+                sdl2_decoration_send_button(scon, btn, true);
+                return;
+            }
+        } else if (ev->type == SDL_MOUSEBUTTONUP &&
+                   scon->decoration->active_button >= 0) {
+            sdl2_decoration_send_button(scon,
+                                        scon->decoration->active_button,
+                                        false);
+            scon->decoration->active_button = -1;
+            return;
+        }
+    }
+
+    if (scon->decoration) {
+        if (!sdl2_decoration_map_mouse(scon, bev->x, bev->y, 0, 0,
+                                       surf_w, surf_h, &x, &y, &dx, &dy)) {
+            return;
+        }
+    } else {
+        SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
+        x = (int64_t)bev->x * surf_w / scr_w;
+        y = (int64_t)bev->y * surf_h / scr_h;
+    }
 
     if (qemu_input_is_absolute(scon->dcl.con)) {
         if (ev->type == SDL_MOUSEBUTTONDOWN) {
@@ -783,6 +1037,12 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
         }
         sdl2_console[i].idx = i;
         sdl2_console[i].opts = o;
+        if (i == 0 && o->u.sdl.decoration) {
+            if (!sdl2_decoration_init(&sdl2_console[i],
+                                       o->u.sdl.decoration)) {
+                error_report("decoration: disabling for console 0");
+            }
+        }
 #ifdef CONFIG_OPENGL
         sdl2_console[i].opengl = display_opengl;
         sdl2_console[i].dcl.ops = display_opengl ? &dcl_gl_ops : &dcl_2d_ops;

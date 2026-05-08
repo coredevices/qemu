@@ -118,13 +118,21 @@ endif
 
 if sdl.found()
   sdl_ss = ss.source_set()
-  sdl_ss.add(sdl, sdl_image, pixman, glib, files(
+  sdl_ss.add(sdl, sdl_image, png, pixman, glib, files(
     'sdl2-2d.c',
+    'sdl2-decoration.c',
     'sdl2-input.c',
     'sdl2.c',
   ))
   sdl_ss.add(when: opengl, if_true: files('sdl2-gl.c'))
   sdl_ss.add(when: x11, if_true: files('x_keymap.c'))
+  if host_os == 'darwin'
+    # Decorated/transparent window path requires direct Cocoa calls — see
+    # the file's preamble for why SDL2 alone can't do this on macOS.
+    sdl_ss.add(files('sdl2-cocoa.m'))
+    sdl_ss.add(dependency('appleframeworks',
+                          modules: ['Cocoa', 'QuartzCore']))
+  endif
   ui_modules += {'sdl' : sdl_ss}
 endif
 

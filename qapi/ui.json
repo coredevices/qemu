@@ -1472,10 +1472,15 @@
 # @grab-mod: Modifier keys that should be pressed together with the
 #     "G" key to release the mouse grab.
 #
+# @decoration: Name of a Pebble watch decoration preset to render around
+#     the guest framebuffer (e.g. "pt2"). The window becomes borderless
+#     and the watch frame can be used to drag it.
+#
 # Since: 7.1
 ##
 { 'struct'  : 'DisplaySDL',
-  'data'    : { '*grab-mod'   : 'HotKeyMod' } }
+  'data'    : { '*grab-mod'   : 'HotKeyMod',
+                '*decoration' : 'str' } }
 
 ##
 # @DisplayType:

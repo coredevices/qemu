@@ -171,6 +171,13 @@ mkdir -p "${DIST_DIR}/bin"
 cp "${BUILD_DIR}/qemu-system-arm" "${DIST_DIR}/bin/qemu-pebble"
 strip "${DIST_DIR}/bin/qemu-pebble"
 
+# Bundle data files (watch decorations) at the relocated CONFIG_QEMU_DATADIR
+# layout: dist/share/qemu/pebble-decorations/. qemu-pebble locates them at
+# runtime via get_relocated_path(CONFIG_QEMU_DATADIR).
+mkdir -p "${DIST_DIR}/share/qemu/pebble-decorations"
+cp "${SCRIPT_DIR}/pc-bios/pebble-decorations/"*.png \
+    "${DIST_DIR}/share/qemu/pebble-decorations/"
+
 if [ "$OS" = "Darwin" ] && command -v brew &>/dev/null; then
     mkdir -p "${DIST_DIR}/lib"
     for lib in \
