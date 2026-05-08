@@ -77,7 +77,14 @@ static void pbl_uart_update_irq(PblSimpleUart *s)
     if ((s->ctrl & CTRL_TX_IRQ_EN) && (s->intstat & INT_TX_COMPLETE)) {
         level = true;
     }
-    if ((s->ctrl & CTRL_RX_IRQ_EN) && (s->intstat & INT_RX_READY)) {
+    /* RX is level-sensitive: as long as bytes are pending in the FIFO and
+     * RX IRQ is enabled, the line stays asserted.  The firmware ISR drains
+     * the FIFO on each entry, but its upper layer can flip rx_int_enabled
+     * off mid-drain (ring buffer full) and leave bytes behind; those bytes
+     * must trigger another IRQ once the upper layer re-enables RX.  Driving
+     * the line off rx_count (instead of an edge-set intstat bit) is what
+     * makes that work.  See PEBBLE-INSTALL-HANG fix. */
+    if ((s->ctrl & CTRL_RX_IRQ_EN) && (s->rx_count > 0)) {
         level = true;
     }
 
@@ -103,6 +110,11 @@ static uint64_t pbl_uart_read(void *opaque, hwaddr offset, unsigned size)
             s->rx_head = (s->rx_head + 1) % RX_FIFO_SIZE;
             s->rx_count--;
             pbl_uart_update_state(s);
+            /* When the FIFO drains to empty, drop the IRQ line so the ISR
+             * can return without immediately re-firing. */
+            if (s->rx_count == 0) {
+                pbl_uart_update_irq(s);
+            }
             return val;
         }
         return 0;
@@ -115,7 +127,11 @@ static uint64_t pbl_uart_read(void *opaque, hwaddr offset, unsigned size)
         return s->ctrl;
 
     case UART_INTSTAT:
-        return s->intstat;
+        /* Synthesize INT_RX_READY from the FIFO state.  The firmware ISR
+         * clears INT_RX_PENDING at entry and only re-reads UART_INT on the
+         * next IRQ; reporting the bit live off rx_count means a partial
+         * drain doesn't strand bytes when RX_IE is later re-enabled. */
+        return s->intstat | (s->rx_count > 0 ? INT_RX_READY : 0);
 
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -197,12 +213,13 @@ static void pbl_uart_receive(void *opaque, const uint8_t *buf, int size)
 
     if (size > 0) {
         pbl_uart_update_state(s);
-        /* Only raise the interrupt when the FIFO transitions from empty to
-         * non-empty.  Avoid re-asserting while the guest ISR is already
-         * draining — re-assertion between QEMU translation blocks can
-         * confuse the NVIC's active/pending state machine. */
+        /* Only assert from the receive path on the empty -> non-empty edge,
+         * so we don't re-pulse the IRQ between TBs while the guest ISR is
+         * already draining.  When the FIFO is already non-empty the IRQ
+         * line is already high (driven off rx_count by pbl_uart_update_irq),
+         * so additional bytes don't need to call update_irq again — once
+         * the firmware drains to empty, the read path will deassert. */
         if (was_empty) {
-            s->intstat |= INT_RX_READY;
             pbl_uart_update_irq(s);
         }
     }
