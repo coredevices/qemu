@@ -26,6 +26,8 @@
 # include "ui/egl-helpers.h"
 #endif
 
+struct Sdl2Decoration;
+
 struct sdl2_console {
     DisplayGLCtx dgc;
     DisplayChangeListener dcl;
@@ -45,6 +47,9 @@ struct sdl2_console {
     bool gui_keysym;
     SDL_GLContext winctx;
     QKbdState *kbd;
+    /* Watch-style window decoration (Pebble). NULL when disabled. */
+    struct Sdl2Decoration *decoration;
+    SDL_Surface *decoration_pending_surface;
 #ifdef CONFIG_OPENGL
     QemuGLShader *gls;
     egl_fb guest_fb;
@@ -96,5 +101,17 @@ void sdl2_gl_scanout_texture(DisplayChangeListener *dcl,
                              void *d3d_tex2d);
 void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,
                            uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+
+#ifdef __APPLE__
+/*
+ * Real SDL2 doesn't support per-pixel transparent windows on macOS, so the
+ * decoration path bypasses SDL's renderer entirely and drives a custom
+ * NSView's CGImage contents itself. See ui/sdl2-cocoa.m.
+ */
+bool sdl2_cocoa_install(SDL_Window *win);
+void sdl2_cocoa_uninstall(SDL_Window *win);
+void sdl2_cocoa_blit(SDL_Window *win, const void *rgba_pixels,
+                     int w, int h, int stride_bytes);
+#endif
 
 #endif /* SDL2_H */

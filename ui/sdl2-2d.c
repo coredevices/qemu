@@ -27,6 +27,7 @@
 #include "ui/console.h"
 #include "ui/input.h"
 #include "ui/sdl2.h"
+#include "ui/sdl2-decoration.h"
 
 void sdl2_2d_update(DisplayChangeListener *dcl,
                     int x, int y, int w, int h)
@@ -36,6 +37,22 @@ void sdl2_2d_update(DisplayChangeListener *dcl,
     SDL_Rect rect;
     size_t surface_data_offset;
     assert(!scon->opengl);
+
+#ifdef __APPLE__
+    /* macOS decorated path: no SDL renderer/texture exist; sdl2-decoration
+     * does the compositing in software and we hand the result to the
+     * Cocoa overlay (see ui/sdl2-cocoa.m). The dirty rect is ignored —
+     * we always recomposite the full window because the watch silhouette
+     * overlaps the framebuffer at its rounded edges. */
+    if (scon->decoration && !scon->real_renderer) {
+        SDL_Surface *out = sdl2_decoration_compose(scon);
+        if (out) {
+            sdl2_cocoa_blit(scon->real_window, out->pixels,
+                            out->w, out->h, out->pitch);
+        }
+        return;
+    }
+#endif
 
     if (!scon->texture) {
         return;
@@ -51,8 +68,20 @@ void sdl2_2d_update(DisplayChangeListener *dcl,
     SDL_UpdateTexture(scon->texture, &rect,
                       surface_data(surf) + surface_data_offset,
                       surface_stride(surf));
+    if (scon->decoration) {
+        /* Clear to fully transparent so areas the PNG doesn't cover have
+         * rendered alpha=0. Linux/Wayland's shape mask already clips the
+         * alpha-zero regions, so this is just defensive. */
+        SDL_SetRenderDrawColor(scon->real_renderer, 0, 0, 0, 0);
+    }
     SDL_RenderClear(scon->real_renderer);
-    SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
+    if (scon->decoration) {
+        SDL_Rect dst = scon->decoration->dst_rect;
+        SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, &dst);
+        sdl2_decoration_render(scon);
+    } else {
+        SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
+    }
     SDL_RenderPresent(scon->real_renderer);
 }
 
@@ -85,9 +114,25 @@ void sdl2_2d_switch(DisplayChangeListener *dcl,
         sdl2_window_resize(scon);
     }
 
-    SDL_RenderSetLogicalSize(scon->real_renderer,
-                             surface_width(new_surface),
-                             surface_height(new_surface));
+    if (scon->decoration) {
+        /* Coordinates are in window pixel space; the decoration PNG is
+         * stretched to fit and the guest framebuffer renders 1:1 at
+         * decoration->dst_rect. */
+        sdl2_decoration_compute_layout(scon,
+                                       surface_width(new_surface),
+                                       surface_height(new_surface));
+    } else {
+        SDL_RenderSetLogicalSize(scon->real_renderer,
+                                 surface_width(new_surface),
+                                 surface_height(new_surface));
+    }
+
+    if (!scon->real_renderer) {
+        /* Cocoa overlay path (macOS decorated): no SDL renderer/texture;
+         * sdl2_decoration_compose pulls pixels straight from the surface. */
+        sdl2_2d_redraw(scon);
+        return;
+    }
 
     switch (surface_format(scon->surface)) {
     case PIXMAN_x1r5g5b5:
@@ -97,16 +142,26 @@ void sdl2_2d_switch(DisplayChangeListener *dcl,
         format = SDL_PIXELFORMAT_RGB565;
         break;
     case PIXMAN_a8r8g8b8:
-    case PIXMAN_x8r8g8b8:
         format = SDL_PIXELFORMAT_ARGB8888;
         break;
+    case PIXMAN_x8r8g8b8:
+        /* The X byte is undefined; QEMU's rgb_to_pixel32 leaves it as 0.
+         * Use the X-variant format so SDL doesn't interpret it as alpha
+         * and turn black framebuffer pixels transparent under a shaped
+         * window. */
+        format = SDL_PIXELFORMAT_XRGB8888;
+        break;
     case PIXMAN_a8b8g8r8:
-    case PIXMAN_x8b8g8r8:
         format = SDL_PIXELFORMAT_ABGR8888;
         break;
+    case PIXMAN_x8b8g8r8:
+        format = SDL_PIXELFORMAT_XBGR8888;
+        break;
     case PIXMAN_r8g8b8a8:
-    case PIXMAN_r8g8b8x8:
         format = SDL_PIXELFORMAT_RGBA8888;
+        break;
+    case PIXMAN_r8g8b8x8:
+        format = SDL_PIXELFORMAT_RGBX8888;
         break;
     case PIXMAN_b8g8r8x8:
         format = SDL_PIXELFORMAT_BGRX8888;

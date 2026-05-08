@@ -2098,7 +2098,7 @@ DEF("display", HAS_ARG, QEMU_OPTION_display,
 #endif
 #if defined(CONFIG_SDL)
     "-display sdl[,gl=on|core|es|off][,grab-mod=<mod>][,show-cursor=on|off]\n"
-    "            [,window-close=on|off]\n"
+    "            [,window-close=on|off][,decoration=<name>]\n"
 #endif
 #if defined(CONFIG_GTK)
     "-display gtk[,full-screen=on|off][,gl=on|off][,grab-on-hover=on|off]\n"
@@ -2175,6 +2175,13 @@ SRST
         ``show-cursor=on|off`` :  Force showing the mouse cursor
 
         ``window-close=on|off`` : Allow to quit qemu with window close button
+
+        ``decoration=<name>`` : Render a Pebble watch decoration around the
+        guest framebuffer. ``<name>`` selects a built-in preset (e.g. ``pt2``
+        for Pebble Time 2). The window becomes borderless and the watch
+        frame area drags the window. Mouse clicks inside the screen area
+        are forwarded to the guest; clicks on the side buttons are mapped
+        to back/up/select/down.
 
     ``gtk``
         Display video output in a GTK window. This interface provides
