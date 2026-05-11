@@ -49,6 +49,7 @@
               glib
               pixman
               SDL2
+              libpng
               zlib
             ] ++ lib.optionals stdenv.hostPlatform.isDarwin [
               pkgs.apple-sdk_15
