@@ -9,10 +9,19 @@
  *   Region 0 (4K): Control registers
  *   Region 1 (32MB): XIP memory (read/write RAM)
  *
- * Control Registers:
- *   0x00 CTRL   - Bit 0: XIP enable (always enabled in QEMU)
- *   0x04 STATUS - Bit 0: busy (always 0 in QEMU)
- *   0x08 SIZE   - Flash size in bytes (read-only)
+ * Control Registers (must match firmware in qemu_flash_hal.c):
+ *   0x00 CMD        - Write: 1=ERASE_SUBSECTOR, 2=ERASE_SECTOR, 3=WRITE_ENABLE
+ *   0x04 ADDR       - Write: target XIP-base + offset for the next CMD
+ *   0x08 STATUS     - Read:  bit 0 BUSY, bit 1 COMPLETE (we're synchronous, so 0)
+ *   0x0C INT_CTRL   - (unused, accepts writes for forward-compat)
+ *   0x10 INT_STATUS - (unused, accepts writes for forward-compat)
+ *   0x14 SIZE       - Read:  flash size in bytes
+ *
+ * Erase semantics: writing CMD_ERASE_{SUBSECTOR,SECTOR} after staging an
+ * address in ADDR memset()s the targeted region of the XIP storage to 0xFF,
+ * matching real NOR-flash behavior.  Without this PFS / flash_logging see
+ * stale bytes in regions they think are erased and the firmware silently
+ * misbehaves over many install cycles.
  *
  * The flash content can be loaded from a block device (drive property)
  * for persistence across QEMU sessions.
@@ -36,13 +45,30 @@
 #define TYPE_PEBBLE_EXTFLASH "pebble-extflash"
 OBJECT_DECLARE_SIMPLE_TYPE(PblExtFlash, PEBBLE_EXTFLASH)
 
-/* Register offsets */
-#define EXTFLASH_CTRL    0x00
-#define EXTFLASH_STATUS  0x04
-#define EXTFLASH_SIZE    0x08
+/* Register offsets — must match firmware (qemu_flash_hal.c) */
+#define EXTFLASH_CMD         0x00
+#define EXTFLASH_ADDR        0x04
+#define EXTFLASH_STATUS      0x08
+#define EXTFLASH_INT_CTRL    0x0C
+#define EXTFLASH_INT_STATUS  0x10
+#define EXTFLASH_SIZE        0x14
+
+/* CMD values */
+#define EXTFLASH_CMD_ERASE_SUBSECTOR  1
+#define EXTFLASH_CMD_ERASE_SECTOR     2
+#define EXTFLASH_CMD_WRITE_ENABLE     3
+
+/* Erase geometry — must match firmware QEMU_{SUBSECTOR,SECTOR}_SIZE */
+#define EXTFLASH_SUBSECTOR_SIZE       0x1000   /* 4 KB */
+#define EXTFLASH_SECTOR_SIZE          0x10000  /* 64 KB */
 
 /* Default size: 32 MB */
 #define EXTFLASH_DEFAULT_SIZE  (32 * MiB)
+
+/* Default XIP base (matches PBL_EXTFLASH_BASE in pebble_generic.h).  Firmware
+ * passes erase addresses as XIP-mapped pointers; we subtract this to find
+ * the offset within s->storage.  Overridable via the "xip-base" property. */
+#define EXTFLASH_DEFAULT_XIP_BASE     0x10000000
 
 struct PblExtFlash {
     SysBusDevice parent_obj;
@@ -54,11 +80,51 @@ struct PblExtFlash {
     uint8_t *storage;
     uint32_t size;
     uint32_t backed_size;
+    uint32_t xip_base;
 
-    uint32_t ctrl;
+    /* Last value written to EXTFLASH_ADDR.  Latched until a CMD consumes it,
+     * matching the typical hardware register pattern. */
+    uint32_t pending_addr;
 
     Notifier shutdown_notifier;
 };
+
+static void pbl_extflash_do_erase(PblExtFlash *s, uint32_t cmd)
+{
+    size_t erase_size;
+    switch (cmd) {
+    case EXTFLASH_CMD_ERASE_SUBSECTOR:
+        erase_size = EXTFLASH_SUBSECTOR_SIZE;
+        break;
+    case EXTFLASH_CMD_ERASE_SECTOR:
+        erase_size = EXTFLASH_SECTOR_SIZE;
+        break;
+    default:
+        return;
+    }
+
+    /* The firmware stages XIP-mapped addresses (PBL_EXTFLASH_BASE + offset).
+     * Subtract the XIP base, then align down to the requested erase
+     * granularity — both real NOR flash and PFS expect that. */
+    uint32_t addr = s->pending_addr;
+    if (addr < s->xip_base) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pebble-extflash: erase addr 0x%" PRIx32
+                      " below xip_base 0x%" PRIx32 "\n",
+                      addr, s->xip_base);
+        return;
+    }
+    uint32_t offset = (addr - s->xip_base) & ~(uint32_t)(erase_size - 1);
+    if (offset >= s->size || offset + erase_size > s->size) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pebble-extflash: erase out of range offset=0x%" PRIx32
+                      " size=0x%zx\n",
+                      offset, erase_size);
+        return;
+    }
+
+    memset(s->storage + offset, 0xFF, erase_size);
+}
 
 static uint64_t pbl_extflash_regs_read(void *opaque, hwaddr offset,
                                         unsigned size)
@@ -66,10 +132,15 @@ static uint64_t pbl_extflash_regs_read(void *opaque, hwaddr offset,
     PblExtFlash *s = opaque;
 
     switch (offset) {
-    case EXTFLASH_CTRL:
-        return s->ctrl;
+    case EXTFLASH_CMD:
+        return 0;  /* command register reads as 0 once consumed */
+    case EXTFLASH_ADDR:
+        return s->pending_addr;
     case EXTFLASH_STATUS:
-        return 0;  /* never busy */
+        return 0;  /* synchronous: never busy, never reports complete bit */
+    case EXTFLASH_INT_CTRL:
+    case EXTFLASH_INT_STATUS:
+        return 0;
     case EXTFLASH_SIZE:
         return s->size;
     default:
@@ -86,8 +157,29 @@ static void pbl_extflash_regs_write(void *opaque, hwaddr offset,
     PblExtFlash *s = opaque;
 
     switch (offset) {
-    case EXTFLASH_CTRL:
-        s->ctrl = value & 0x1;
+    case EXTFLASH_CMD:
+        switch (value) {
+        case EXTFLASH_CMD_ERASE_SUBSECTOR:
+        case EXTFLASH_CMD_ERASE_SECTOR:
+            pbl_extflash_do_erase(s, (uint32_t)value);
+            break;
+        case EXTFLASH_CMD_WRITE_ENABLE:
+            /* No-op in QEMU: writes are unconditionally accepted via the
+             * RAM-backed XIP region. */
+            break;
+        default:
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "pebble-extflash: unknown CMD 0x%" PRIx64 "\n",
+                          value);
+            break;
+        }
+        break;
+    case EXTFLASH_ADDR:
+        s->pending_addr = (uint32_t)value;
+        break;
+    case EXTFLASH_INT_CTRL:
+    case EXTFLASH_INT_STATUS:
+        /* Accept and discard — firmware writes-1-to-clear style. */
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -154,8 +246,6 @@ static void pbl_extflash_realize(DeviceState *dev, Error **errp)
         s->shutdown_notifier.notify = pbl_extflash_shutdown_notify;
         qemu_register_shutdown_notifier(&s->shutdown_notifier);
     }
-
-    s->ctrl = 1;  /* XIP enabled by default */
 }
 
 static void pbl_extflash_init(Object *obj)
@@ -179,12 +269,14 @@ static void pbl_extflash_init(Object *obj)
 static void pbl_extflash_reset(DeviceState *dev)
 {
     PblExtFlash *s = PEBBLE_EXTFLASH(dev);
-    s->ctrl = 1;
+    s->pending_addr = 0;
 }
 
 static const Property pbl_extflash_properties[] = {
     DEFINE_PROP_DRIVE("drive", PblExtFlash, blk),
     DEFINE_PROP_UINT32("size", PblExtFlash, size, EXTFLASH_DEFAULT_SIZE),
+    DEFINE_PROP_UINT32("xip-base", PblExtFlash, xip_base,
+                       EXTFLASH_DEFAULT_XIP_BASE),
 };
 
 static void pbl_extflash_class_init(ObjectClass *klass, const void *data)
