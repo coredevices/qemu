@@ -16,6 +16,16 @@
  *   0x0C INT_CTRL   - (unused, accepts writes for forward-compat)
  *   0x10 INT_STATUS - (unused, accepts writes for forward-compat)
  *   0x14 SIZE       - Read:  flash size in bytes
+ *   0x18 SYNC_LEN   - Write: length (bytes) of the range the next SYNC will
+ *                            flush.  Latched until consumed.
+ *   0x1C SYNC       - Write: XIP-based address whose [addr, addr+SYNC_LEN)
+ *                            range to blk_pwrite() back to the backing file.
+ *                            Firmware calls this after each page write so the
+ *                            on-disk image stays in sync with s->storage at
+ *                            every write granularity — matches real NOR-flash
+ *                            atomicity from PFS's perspective.
+ *                            Erases auto-flush themselves (QEMU knows the
+ *                            range from FLASH_ADDR + erase geometry).
  *
  * Erase semantics: writing CMD_ERASE_{SUBSECTOR,SECTOR} after staging an
  * address in ADDR memset()s the targeted region of the XIP storage to 0xFF,
@@ -23,8 +33,11 @@
  * stale bytes in regions they think are erased and the firmware silently
  * misbehaves over many install cycles.
  *
- * The flash content can be loaded from a block device (drive property)
- * for persistence across QEMU sessions.
+ * Persistence model: we used to auto-flush s->storage on shutdown.  That fires
+ * on every SIGTERM (including `pebble kill`) and reliably captures torn writes
+ * — flash_logging journal mid-update, PFS OVERWRITE_STARTED with no matching
+ * OVERWRITE_COMPLETE, etc. — which then wedge the next boot.  Now firmware
+ * drives persistence explicitly via the SYNC register and we never auto-flush.
  *
  * Copyright (c) 2026 Core Devices LLC
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -32,7 +45,6 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "qemu/notify.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/sysbus.h"
@@ -40,7 +52,6 @@
 #include "hw/qdev-properties-system.h"
 #include "hw/block/block.h"
 #include "system/block-backend.h"
-#include "system/runstate.h"
 
 #define TYPE_PEBBLE_EXTFLASH "pebble-extflash"
 OBJECT_DECLARE_SIMPLE_TYPE(PblExtFlash, PEBBLE_EXTFLASH)
@@ -52,6 +63,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PblExtFlash, PEBBLE_EXTFLASH)
 #define EXTFLASH_INT_CTRL    0x0C
 #define EXTFLASH_INT_STATUS  0x10
 #define EXTFLASH_SIZE        0x14
+#define EXTFLASH_SYNC_LEN    0x18
+#define EXTFLASH_SYNC        0x1C
 
 /* CMD values */
 #define EXTFLASH_CMD_ERASE_SUBSECTOR  1
@@ -86,8 +99,39 @@ struct PblExtFlash {
      * matching the typical hardware register pattern. */
     uint32_t pending_addr;
 
-    Notifier shutdown_notifier;
+    /* Latched length for the next SYNC.  Cleared after each SYNC. */
+    uint32_t pending_sync_len;
 };
+
+static void pbl_extflash_flush_range(PblExtFlash *s, uint32_t offset,
+                                      uint32_t len)
+{
+    if (!s->blk || !blk_is_writable(s->blk) || s->backed_size == 0 ||
+        len == 0) {
+        return;
+    }
+    if (offset >= s->size || offset + len > s->size) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pebble-extflash: SYNC out of range offset=0x%" PRIx32
+                      " len=0x%" PRIx32 "\n", offset, len);
+        return;
+    }
+    /* Clip to the backing file's actual length so we don't extend the file
+     * past what was loaded.  Without this an XIP-region write past the file
+     * end would silently expand the file. */
+    uint32_t end = offset + len;
+    if (end > s->backed_size) {
+        if (offset >= s->backed_size) {
+            return;
+        }
+        len = s->backed_size - offset;
+    }
+    if (blk_pwrite(s->blk, offset, len, s->storage + offset, 0) < 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pebble-extflash: SYNC blk_pwrite failed offset=0x%"
+                      PRIx32 " len=0x%" PRIx32 "\n", offset, len);
+    }
+}
 
 static void pbl_extflash_do_erase(PblExtFlash *s, uint32_t cmd)
 {
@@ -124,6 +168,10 @@ static void pbl_extflash_do_erase(PblExtFlash *s, uint32_t cmd)
     }
 
     memset(s->storage + offset, 0xFF, erase_size);
+
+    /* Auto-flush the erased range — QEMU already knows the geometry so there's
+     * no reason to make firmware emit a separate SYNC for erases. */
+    pbl_extflash_flush_range(s, offset, erase_size);
 }
 
 static uint64_t pbl_extflash_regs_read(void *opaque, hwaddr offset,
@@ -143,6 +191,10 @@ static uint64_t pbl_extflash_regs_read(void *opaque, hwaddr offset,
         return 0;
     case EXTFLASH_SIZE:
         return s->size;
+    case EXTFLASH_SYNC_LEN:
+        return s->pending_sync_len;
+    case EXTFLASH_SYNC:
+        return 0;  /* write-only; reads are harmless */
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pebble-extflash: bad read offset 0x%" HWADDR_PRIx "\n",
@@ -181,6 +233,25 @@ static void pbl_extflash_regs_write(void *opaque, hwaddr offset,
     case EXTFLASH_INT_STATUS:
         /* Accept and discard — firmware writes-1-to-clear style. */
         break;
+    case EXTFLASH_SYNC_LEN:
+        s->pending_sync_len = (uint32_t)value;
+        break;
+    case EXTFLASH_SYNC: {
+        /* value is the XIP-mapped address; flush [addr, addr+pending_sync_len)
+         * back to the backing file. */
+        uint32_t addr = (uint32_t)value;
+        if (addr < s->xip_base) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "pebble-extflash: SYNC addr 0x%" PRIx32
+                          " below xip_base 0x%" PRIx32 "\n",
+                          addr, s->xip_base);
+        } else {
+            pbl_extflash_flush_range(s, addr - s->xip_base,
+                                      s->pending_sync_len);
+        }
+        s->pending_sync_len = 0;
+        break;
+    }
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pebble-extflash: bad write offset 0x%" HWADDR_PRIx "\n",
@@ -196,19 +267,6 @@ static const MemoryRegionOps pbl_extflash_regs_ops = {
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,
 };
-
-static void pbl_extflash_shutdown_notify(Notifier *n, void *data)
-{
-    PblExtFlash *s = container_of(n, PblExtFlash, shutdown_notifier);
-
-    if (!s->blk || !blk_is_writable(s->blk) || s->backed_size == 0) {
-        return;
-    }
-    if (blk_pwrite(s->blk, 0, s->backed_size, s->storage, 0) < 0) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "pebble-extflash: failed to flush storage on shutdown\n");
-    }
-}
 
 static void pbl_extflash_realize(DeviceState *dev, Error **errp)
 {
@@ -239,12 +297,6 @@ static void pbl_extflash_realize(DeviceState *dev, Error **errp)
             }
             s->backed_size = blk_size;
         }
-
-        /* Persist guest writes back to the file before bdrv_close_all()
-         * tears the block layer down. Fires for graceful shutdown,
-         * `(qemu) quit`, and SIGINT (Ctrl+C). */
-        s->shutdown_notifier.notify = pbl_extflash_shutdown_notify;
-        qemu_register_shutdown_notifier(&s->shutdown_notifier);
     }
 }
 
@@ -270,6 +322,7 @@ static void pbl_extflash_reset(DeviceState *dev)
 {
     PblExtFlash *s = PEBBLE_EXTFLASH(dev);
     s->pending_addr = 0;
+    s->pending_sync_len = 0;
 }
 
 static const Property pbl_extflash_properties[] = {
