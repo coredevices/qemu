@@ -5,9 +5,9 @@
  * Uses simple custom MMIO peripherals instead of MCU-specific emulation.
  *
  * Machine types:
- *   pebble-emery   - Cortex-M33, 480KB RAM, 4MB flash
+ *   pebble-emery   - Cortex-M33, 512KB RAM, 4MB flash
  *   pebble-flint   - Cortex-M4, 256KB RAM, 4MB flash
- *   pebble-gabbro  - Cortex-M33, 480KB RAM, 4MB flash
+ *   pebble-gabbro  - Cortex-M33, 512KB RAM, 4MB flash
  *
  * Copyright (c) 2026 Core Devices LLC
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -45,7 +45,7 @@ static const PblGenericBoardConfig board_cfg_emery = {
     .board_type    = PBL_BOARD_EMERY,
     .board_id      = PBL_BOARD_ID_EMERY,
     .flash_size    = 4 * MiB,
-    .ram_size      = 480 * KiB,
+    .ram_size      = 512 * KiB,
     .sysclk_frq    = PBL_SYSCLK_FRQ,
     .display_width = 200,
     .display_height = 228,
@@ -79,7 +79,7 @@ static const PblGenericBoardConfig board_cfg_gabbro = {
     .board_type    = PBL_BOARD_GABBRO,
     .board_id      = PBL_BOARD_ID_GABBRO,
     .flash_size    = 4 * MiB,
-    .ram_size      = 480 * KiB,
+    .ram_size      = 512 * KiB,
     .sysclk_frq    = PBL_SYSCLK_FRQ,
     .display_width = 260,
     .display_height = 260,
