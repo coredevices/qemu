@@ -45,6 +45,11 @@ struct PblRtc {
     MemoryRegion iomem;
     qemu_irq irq;
 
+    /* Offset (in seconds) added to host wall-clock to produce the RTC time.
+     * The guest sets the RTC by writing TIME_LO/TIME_HI; we record an offset
+     * rather than a base so the clock keeps ticking after the write. */
+    int64_t time_offset_s;
+
     uint32_t alarm;
     uint32_t ctrl;
     uint32_t backup[RTC_NUM_BACKUP];
@@ -56,12 +61,18 @@ static void pbl_rtc_update_irq(PblRtc *s)
                           (s->ctrl & CTRL_ALARM_IRQ));
 }
 
-/* Return the host wall-clock time as a UTC unix timestamp. Guests running on
- * the generic Pebble machine are expected to apply their own timezone
- * conversion. */
-static uint64_t pbl_rtc_get_time(void)
+/* Return the host wall-clock time, in seconds, as a UTC unix timestamp. */
+static int64_t pbl_rtc_host_time(void)
 {
-    return (uint64_t)qemu_clock_get_ms(QEMU_CLOCK_HOST) / 1000;
+    return qemu_clock_get_ms(QEMU_CLOCK_HOST) / 1000;
+}
+
+/* Return the RTC's current time: host wall-clock plus the guest-set offset.
+ * Guests running on the generic Pebble machine are expected to apply their
+ * own timezone conversion. */
+static uint64_t pbl_rtc_get_time(PblRtc *s)
+{
+    return (uint64_t)(pbl_rtc_host_time() + s->time_offset_s);
 }
 
 static uint64_t pbl_rtc_read(void *opaque, hwaddr offset, unsigned size)
@@ -71,11 +82,11 @@ static uint64_t pbl_rtc_read(void *opaque, hwaddr offset, unsigned size)
 
     switch (offset) {
     case RTC_TIME_LO:
-        now = pbl_rtc_get_time();
+        now = pbl_rtc_get_time(s);
         return (uint32_t)now;
 
     case RTC_TIME_HI:
-        now = pbl_rtc_get_time();
+        now = pbl_rtc_get_time(s);
         return (uint32_t)(now >> 32);
 
     case RTC_ALARM:
@@ -104,8 +115,24 @@ static void pbl_rtc_write(void *opaque, hwaddr offset,
                            uint64_t value, unsigned size)
 {
     PblRtc *s = opaque;
+    uint64_t target;
 
     switch (offset) {
+    case RTC_TIME_LO:
+        /* Pebble's time_t is 32 bits, so the firmware only writes TIME_LO.
+         * Treat it as the low 32 bits of the desired UTC timestamp, preserving
+         * whatever the guest last wrote to TIME_HI (zero by default). */
+        target = ((uint64_t)pbl_rtc_get_time(s) & ~0xFFFFFFFFULL) |
+                 (uint32_t)value;
+        s->time_offset_s = (int64_t)target - pbl_rtc_host_time();
+        break;
+
+    case RTC_TIME_HI:
+        target = ((uint64_t)pbl_rtc_get_time(s) & 0xFFFFFFFFULL) |
+                 ((uint64_t)(uint32_t)value << 32);
+        s->time_offset_s = (int64_t)target - pbl_rtc_host_time();
+        break;
+
     case RTC_ALARM:
         s->alarm = value;
         break;
@@ -157,6 +184,7 @@ static void pbl_rtc_reset(DeviceState *dev)
 
     s->alarm = 0;
     s->ctrl = 0;
+    s->time_offset_s = 0;
     /* Backup registers intentionally NOT cleared on reset */
 }
 
