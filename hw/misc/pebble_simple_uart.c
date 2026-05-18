@@ -153,7 +153,17 @@ static void pbl_uart_write(void *opaque, hwaddr offset,
         if (s->write_handler) {
             s->write_handler(s->write_handler_opaque, &ch, 1);
         } else {
-            qemu_chr_fe_write_all(&s->chr, &ch, 1);
+            /* Non-blocking write: if the chardev backing buffer is full
+             * (e.g. host pulse-console stopped reading, or the TCP socket
+             * buffer filled during a log burst), DROP the byte rather than
+             * blocking the vCPU thread.  qemu_chr_fe_write_all would block
+             * inside this MMIO store callback, which freezes the guest in
+             * the middle of `uart_write_byte` — STATE_TX_READY still reads
+             * true so the firmware never knows to back off, KernelMain
+             * spins, pebble-tool times out.  Dropping a few log bytes
+             * during host slowness is the correct tradeoff for a dev/debug
+             * transport. */
+            (void)qemu_chr_fe_write(&s->chr, &ch, 1);
         }
         /* TX is instant in QEMU — signal completion */
         s->intstat |= INT_TX_COMPLETE;
