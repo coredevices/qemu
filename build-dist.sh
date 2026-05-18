@@ -178,6 +178,11 @@ mkdir -p "${DIST_DIR}/share/qemu/pebble-decorations"
 cp "${SCRIPT_DIR}/pc-bios/pebble-decorations/"*.png \
     "${DIST_DIR}/share/qemu/pebble-decorations/"
 
+# Keymaps — SDL display backend loads these at runtime relative to the
+# binary at lib/pc-bios/keymaps.
+mkdir -p "${DIST_DIR}/lib/pc-bios/keymaps"
+cp "${SCRIPT_DIR}/pc-bios/keymaps/"* "${DIST_DIR}/lib/pc-bios/keymaps/"
+
 if [ "$OS" = "Darwin" ] && command -v brew &>/dev/null; then
     mkdir -p "${DIST_DIR}/lib"
     for lib in \
