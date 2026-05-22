@@ -106,11 +106,50 @@ typedef struct f2xx_rtc {
 
     uint32_t      regs[R_RTC_MAX];
     int           wp_count; /* Number of correct writes to WP reg */
+
+    /* Last level driven onto each outgoing IRQ line. The EXTI model that these
+     * lines feed edge-detects every qemu_set_irq() call, so we must only signal
+     * an IRQ on an actual level change -- otherwise re-asserting an already-high
+     * alarm line (e.g. while ALRxF is still set) looks like a fresh edge and
+     * produces spurious extra interrupts. */
+    bool          alarm_irq_level[2];
+    bool          wut_irq_level;
 } f2xx_rtc;
 
 
 // Update target date and time from the host
 static void f2xx_update_current_date_and_time(void *arg);
+
+// Side-effect-free refresh of the TR/DR registers (used by the read path)
+static void f2xx_rtc_refresh_time_and_date(f2xx_rtc *s);
+
+
+// Drive an alarm IRQ line, but only emit a signal when the level actually
+// changes. The downstream EXTI controller treats every qemu_set_irq() call as a
+// potential edge, so re-asserting an already-high line would spuriously re-pend
+// the interrupt once the guest has cleared the EXTI pending bit.
+static void
+f2xx_rtc_set_alarm_irq(f2xx_rtc *s, int unit, int level)
+{
+    level = !!level;
+    if (s->alarm_irq_level[unit] == level) {
+        return;
+    }
+    s->alarm_irq_level[unit] = level;
+    qemu_set_irq(s->irq[unit], level);
+}
+
+// Same edge-change filtering for the wake-up timer IRQ line.
+static void
+f2xx_rtc_set_wut_irq(f2xx_rtc *s, int level)
+{
+    level = !!level;
+    if (s->wut_irq_level == level) {
+        return;
+    }
+    s->wut_irq_level = level;
+    qemu_set_irq(s->wut_irq, level);
+}
 
 
 // Compute the period for the clock (seconds increments) in nanoseconds
@@ -289,9 +328,12 @@ f2xx_rtc_read(void *arg, hwaddr addr, unsigned int size)
         return 0;
     }
 
-    // If reading the time or date register, make sure they are brought up to date first
+    // If reading the time or date register, make sure they are brought up to
+    // date first. Use the side-effect-free refresh: a read must not check
+    // alarms or raise IRQs, otherwise reading RTC_TR from inside the firmware's
+    // tick ISR can re-raise the alarm and produce a duplicate tick event.
     if (addr == R_RTC_TR || addr == R_RTC_DR) {
-        f2xx_update_current_date_and_time(s);
+        f2xx_rtc_refresh_time_and_date(s);
     }
 
     uint32_t value = s->regs[addr];
@@ -418,11 +460,15 @@ f2xx_rtc_write(void *arg, hwaddr addr, uint64_t data, unsigned int size)
     case R_RTC_ISR:
         if ((data & 1<<8) == 0 && (s->regs[R_RTC_ISR] & 1<<8) != 0) {
             DPRINTF("f2xx rtc isr lowered\n");
-            qemu_irq_lower(s->irq[0]);
+            f2xx_rtc_set_alarm_irq(s, 0, 0);
+        }
+        if ((data & 1<<9) == 0 && (s->regs[R_RTC_ISR] & 1<<9) != 0) {
+            DPRINTF("f2xx rtc isr B lowered\n");
+            f2xx_rtc_set_alarm_irq(s, 1, 0);
         }
         if ((data & 1<<10) == 0 && (s->regs[R_RTC_ISR] & 1<<10) != 0) {
             DPRINTF("f2xx rtc WUT isr lowered\n");
-            qemu_irq_lower(s->wut_irq);
+            f2xx_rtc_set_wut_irq(s, 0);
         }
         break;
     case R_RTC_PRER:
@@ -470,7 +516,7 @@ f2xx_rtc_write(void *arg, hwaddr addr, uint64_t data, unsigned int size)
             timer_mod(s->wu_timer, qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + elapsed);
         } else {
             DPRINTF("%s: Cancelling WUT\n", __func__);
-            qemu_set_irq(s->wut_irq, 0);
+            f2xx_rtc_set_wut_irq(s, 0);
             timer_del(s->wu_timer);
         }
     }
@@ -526,7 +572,7 @@ f2xx_alarm_check(f2xx_rtc *s, int unit)
             DPRINTF("f2xx rtc alarm activated 0x%x 0x%x\n", isr, cr);
         }
     }
-	qemu_set_irq(s->irq[unit], cr & 1<<(12 + unit) && isr & 1<<(8 + unit));
+	f2xx_rtc_set_alarm_irq(s, unit, cr & 1<<(12 + unit) && isr & 1<<(8 + unit));
 }
 
 // This method updates the current time and date registers to match the current
@@ -568,6 +614,24 @@ f2xx_update_current_date_and_time(void *arg)
 }
 
 
+// Refresh the TR/DR registers so they reflect the current host-derived time.
+// This is side-effect free: unlike f2xx_update_current_date_and_time(), it does
+// NOT advance s->ticks, check alarms, raise interrupts, or reschedule the timer.
+// It is therefore safe to call from the MMIO read path. Alarm checking is left
+// entirely to the periodic f2xx_timer() callback, so that a register read can
+// never spuriously re-raise the alarm IRQ (which caused duplicate tick events
+// when the firmware read RTC_TR from inside its own tick ISR).
+static void
+f2xx_rtc_refresh_time_and_date(f2xx_rtc *s)
+{
+    struct tm target_tm;
+    uint64_t period_ns = f2xx_clock_period_ns(s);
+
+    f2xx_rtc_compute_target_time_from_host_time(s, period_ns, &target_tm);
+    f2xx_rtc_set_time_and_date_registers(s, &target_tm);
+}
+
+
 // This timer runs on every tick (usually second)
 static void
 f2xx_timer(void *arg)
@@ -601,7 +665,7 @@ f2xx_wu_timer(void *arg)
         DPRINTF("f2xx wakeup timer ISR activated 0x%x 0x%x\n", isr, cr);
     }
 
-    qemu_set_irq(s->wut_irq, (cr & R_RTC_CR_WUTIE) && (isr & R_RTC_ISR_WUT));
+    f2xx_rtc_set_wut_irq(s, (cr & R_RTC_CR_WUTIE) && (isr & R_RTC_ISR_WUT));
 
     // Reschedule again
     int64_t elapsed = f2xx_wut_period_ns(s, s->regs[R_RTC_WUTR]);

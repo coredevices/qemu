@@ -1655,12 +1655,18 @@ static void nvic_writel(NVICState *s, uint32_t offset, uint32_t value,
         if (!arm_feature(&cpu->env, ARM_FEATURE_V7)) {
             goto bad_offset;
         }
-        /* We don't implement deep-sleep so these bits are RAZ/WI.
+        /*
          * The other bits in the register are banked.
          * QEMU's implementation ignores SEVONPEND and SLEEPONEXIT, which
          * is architecturally permitted.
+         *
+         * SLEEPDEEP is kept (not RAZ/WI): the STM32 Pebble machines use it to
+         * model the STM32 STOP low-power mode. While SLEEPDEEP is set the core
+         * clock that feeds the SysTick is stopped, so the SysTick must not pend
+         * its exception -- see nvic_systick_trigger(). SLEEPDEEPS (Secure-only)
+         * stays RAZ/WI.
          */
-        value &= ~(R_V7M_SCR_SLEEPDEEP_MASK | R_V7M_SCR_SLEEPDEEPS_MASK);
+        value &= ~R_V7M_SCR_SLEEPDEEPS_MASK;
         cpu->env.v7m.scr[attrs.secure] = value;
         break;
     case 0xd14: /* Configuration Control.  */
@@ -2665,7 +2671,19 @@ static void nvic_systick_trigger(void *opaque, int n, int level)
          * behaviour.)
          * n == 0 : NonSecure systick
          * n == 1 : Secure systick
+         *
+         * While the core is in deep sleep (SCR.SLEEPDEEP set, used by the
+         * STM32 STOP low-power mode) the SysTick's clock is stopped, so it
+         * must not pend its exception -- doing so would spuriously wake the
+         * core. Firmware accounts for time elapsed across STOP using the RTC
+         * wakeup timer instead. Without this, the still-running SysTick wakes
+         * the CPU every tick and its exception double-counts against the
+         * firmware's own elapsed-time accounting, making the OS clock (and
+         * hence the seconds/minutes tick services) run roughly twice as fast.
          */
+        if (s->cpu->env.v7m.scr[n] & R_V7M_SCR_SLEEPDEEP_MASK) {
+            return;
+        }
         armv7m_nvic_set_pending(s, ARMV7M_EXCP_SYSTICK, n);
     }
 }
