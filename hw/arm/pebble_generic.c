@@ -5,9 +5,9 @@
  * Uses simple custom MMIO peripherals instead of MCU-specific emulation.
  *
  * Machine types:
- *   pebble-emery   - Cortex-M33, 512KB RAM, 4MB flash
+ *   pebble-emery   - Cortex-M33, 512KB RAM, 16MB PSRAM, 4MB flash
  *   pebble-flint   - Cortex-M4, 256KB RAM, 4MB flash
- *   pebble-gabbro  - Cortex-M33, 512KB RAM, 4MB flash
+ *   pebble-gabbro  - Cortex-M33, 512KB RAM, 16MB PSRAM, 4MB flash
  *
  * Copyright (c) 2026 Core Devices LLC
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -46,6 +46,7 @@ static const PblGenericBoardConfig board_cfg_emery = {
     .board_id      = PBL_BOARD_ID_EMERY,
     .flash_size    = 4 * MiB,
     .ram_size      = 512 * KiB,
+    .psram_size    = 16 * MiB,
     .sysclk_frq    = PBL_SYSCLK_FRQ,
     .display_width = 200,
     .display_height = 228,
@@ -80,6 +81,7 @@ static const PblGenericBoardConfig board_cfg_gabbro = {
     .board_id      = PBL_BOARD_ID_GABBRO,
     .flash_size    = 4 * MiB,
     .ram_size      = 512 * KiB,
+    .psram_size    = 16 * MiB,
     .sysclk_frq    = PBL_SYSCLK_FRQ,
     .display_width = 260,
     .display_height = 260,
@@ -116,6 +118,13 @@ static void pbl_generic_init(MachineState *machine)
     memory_region_init_ram(&s->sram, NULL, "pebble.sram",
                            cfg->ram_size, &error_fatal);
     memory_region_add_subregion(system_memory, PBL_SRAM_BASE, &s->sram);
+
+    /* PSRAM */
+    if (cfg->psram_size) {
+        memory_region_init_ram(&s->psram, NULL, "pebble.psram",
+                               cfg->psram_size, &error_fatal);
+        memory_region_add_subregion(system_memory, PBL_PSRAM_BASE, &s->psram);
+    }
 
     /* ARMv7M CPU + NVIC */
     object_initialize_child(OBJECT(s), "armv7m", &s->armv7m, TYPE_ARMV7M);
