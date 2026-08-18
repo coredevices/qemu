@@ -38,6 +38,7 @@
 #define PBL_FLASH_BASE          0x00000000
 #define PBL_EXTFLASH_BASE       0x10000000
 #define PBL_SRAM_BASE           0x20000000
+#define PBL_PSRAM_BASE          0x60000000
 
 #define PBL_UART0_BASE          0x40000000
 #define PBL_UART1_BASE          0x40001000
@@ -88,6 +89,7 @@ typedef struct {
     uint32_t board_id;
     uint32_t flash_size;      /* bytes */
     uint32_t ram_size;        /* bytes */
+    uint32_t psram_size;      /* bytes */
     uint32_t sysclk_frq;     /* Hz */
     /* Display (for Phase 2) */
     uint16_t display_width;
@@ -111,6 +113,7 @@ struct PblGenericMachineState {
     ARMv7MState armv7m;
     MemoryRegion flash;
     MemoryRegion sram;
+    MemoryRegion psram;
 
     Clock *sysclk;
     Clock *refclk;
