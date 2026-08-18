@@ -221,6 +221,31 @@ if [ "$OS" = "Darwin" ]; then
                 found_new=1
             done
         done
+
+        # Homebrew's sdl2 formula now installs sdl2-compat: a shim that
+        # dlopens libSDL3 at runtime, invisible to otool -L. Without SDL3
+        # the shim's constructor blocks in a modal error dialog before
+        # main() runs. Its first dlopen candidate is
+        # @loader_path/libSDL3.dylib, so bundle SDL3 next to it; the next
+        # loop pass then walks SDL3's own deps and the fixup below
+        # rewrites its paths.
+        if [ -f "${DIST_DIR}/lib/libSDL2-2.0.0.dylib" ] \
+            && [ ! -f "${DIST_DIR}/lib/libSDL3.dylib" ] \
+            && strings "${DIST_DIR}/lib/libSDL2-2.0.0.dylib" \
+                | grep -qxF '@loader_path/libSDL3.dylib'; then
+            sdl3=""
+            if command -v brew &>/dev/null; then
+                sdl3="$(brew --prefix sdl3 2>/dev/null || true)/lib/libSDL3.dylib"
+            fi
+            if [ ! -f "$sdl3" ]; then
+                echo "ERROR: bundled libSDL2 is the sdl2-compat shim but libSDL3.dylib was not found" >&2
+                exit 1
+            fi
+            cp "$sdl3" "${DIST_DIR}/lib/libSDL3.dylib"
+            chmod u+w "${DIST_DIR}/lib/libSDL3.dylib"
+            echo "  -> lib/libSDL3.dylib (sdl2-compat runtime dependency)"
+            found_new=1
+        fi
     done
 
     echo "  Fixing up dylib paths with install_name_tool..."
