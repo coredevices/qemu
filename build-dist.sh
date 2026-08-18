@@ -5,7 +5,8 @@
 # Usage: bash build-dist.sh
 #
 # Prerequisites:
-#   macOS:         brew install sdl2 pixman glib pkg-config ninja
+#   macOS:         brew install pkg-config ninja meson
+#                  (libraries are built from source — see build-static-deps.sh)
 #   Debian/Ubuntu: sudo apt install libsdl2-dev libpixman-1-dev libglib2.0-dev \
 #                                   pkg-config ninja-build python3-venv build-essential
 set -euo pipefail
@@ -31,6 +32,32 @@ fi
 
 mkdir -p "${BUILD_DIR}"
 rm -f "${BUILD_DIR}/build.ninja"
+
+if [ "$OS" = "Darwin" ]; then
+    # Link all third-party libraries statically from a pinned staging
+    # prefix (see build-static-deps.sh) so the shipped binary depends
+    # only on macOS system libraries. PKG_CONFIG_LIBDIR (not _PATH)
+    # hides every other pkg-config tree — Homebrew included — from the
+    # build.
+    DEPS_PREFIX="${SCRIPT_DIR}/build/static-deps"
+    bash "${SCRIPT_DIR}/build-static-deps.sh" --prefix "${DEPS_PREFIX}"
+    export PKG_CONFIG_LIBDIR="${DEPS_PREFIX}/lib/pkgconfig"
+    # PKG_CONFIG_PATH is searched *before* LIBDIR dirs — an inherited
+    # value (Homebrew, nix shells) would shadow the staging prefix.
+    unset PKG_CONFIG_PATH
+
+    # meson must query pkg-config with --static so Libs.private (system
+    # frameworks, -lintl, ...) reaches the link line. qemu's --static
+    # can't be used here: it adds -static to ldflags, which macOS does
+    # not support (there is no static libSystem). meson honors a wrapper
+    # via $PKG_CONFIG instead.
+    cat > "${BUILD_DIR}/pkg-config-static" <<'EOF'
+#!/bin/sh
+exec pkg-config --static "$@"
+EOF
+    chmod +x "${BUILD_DIR}/pkg-config-static"
+    export PKG_CONFIG="${BUILD_DIR}/pkg-config-static"
+fi
 
 cd "${BUILD_DIR}"
 
@@ -184,105 +211,23 @@ mkdir -p "${DIST_DIR}/lib/pc-bios/keymaps"
 cp "${SCRIPT_DIR}/pc-bios/keymaps/"* "${DIST_DIR}/lib/pc-bios/keymaps/"
 
 if [ "$OS" = "Darwin" ]; then
-    mkdir -p "${DIST_DIR}/lib"
     BINARY="${DIST_DIR}/bin/qemu-pebble"
     chmod u+w "$BINARY"
 
-    # Library homes that won't exist on end-user machines.
-    NONSYSTEM_RE='^(/opt/homebrew|/usr/local|/opt/local)'
-
-    # Print the non-system dylibs a Mach-O file references. For a dylib this
-    # includes its own install name until -id rewrites it below; both loops
-    # tolerate that (copy is skipped, -change on the id is a no-op).
-    non_system_deps() {
-        otool -L "$1" | tail -n +2 | awk '{print $1}' \
-            | grep -E "${NONSYSTEM_RE}" || true
-    }
-
-    # Copy the full closure of non-system dylibs into dist/lib. Walking the
-    # closure instead of keeping a hardcoded list: a stale list once missed
-    # libpng and shipped a bundle that only ran where Homebrew was installed.
-    echo "  Bundling non-system dylibs..."
-    found_new=1
-    while [ "${found_new}" -eq 1 ]; do
-        found_new=0
-        for f in "$BINARY" "${DIST_DIR}/lib/"*.dylib; do
-            [ -f "$f" ] || continue
-            for ref in $(non_system_deps "$f"); do
-                name=$(basename "$ref")
-                [ -f "${DIST_DIR}/lib/${name}" ] && continue
-                if [ ! -f "$ref" ]; then
-                    echo "ERROR: $f references missing library $ref" >&2
-                    exit 1
-                fi
-                cp "$ref" "${DIST_DIR}/lib/${name}"
-                chmod u+w "${DIST_DIR}/lib/${name}"
-                echo "  -> lib/${name}"
-                found_new=1
-            done
-        done
-
-        # Homebrew's sdl2 formula now installs sdl2-compat: a shim that
-        # dlopens libSDL3 at runtime, invisible to otool -L. Without SDL3
-        # the shim's constructor blocks in a modal error dialog before
-        # main() runs. Its first dlopen candidate is
-        # @loader_path/libSDL3.dylib, so bundle SDL3 next to it; the next
-        # loop pass then walks SDL3's own deps and the fixup below
-        # rewrites its paths.
-        if [ -f "${DIST_DIR}/lib/libSDL2-2.0.0.dylib" ] \
-            && [ ! -f "${DIST_DIR}/lib/libSDL3.dylib" ] \
-            && strings "${DIST_DIR}/lib/libSDL2-2.0.0.dylib" \
-                | grep -qxF '@loader_path/libSDL3.dylib'; then
-            sdl3=""
-            if command -v brew &>/dev/null; then
-                sdl3="$(brew --prefix sdl3 2>/dev/null || true)/lib/libSDL3.dylib"
-            fi
-            if [ ! -f "$sdl3" ]; then
-                echo "ERROR: bundled libSDL2 is the sdl2-compat shim but libSDL3.dylib was not found" >&2
-                exit 1
-            fi
-            cp "$sdl3" "${DIST_DIR}/lib/libSDL3.dylib"
-            chmod u+w "${DIST_DIR}/lib/libSDL3.dylib"
-            echo "  -> lib/libSDL3.dylib (sdl2-compat runtime dependency)"
-            found_new=1
-        fi
-    done
-
-    echo "  Fixing up dylib paths with install_name_tool..."
-    for lib in "${DIST_DIR}/lib/"*.dylib; do
-        [ -f "$lib" ] || continue
-        install_name_tool -id "@loader_path/$(basename "$lib")" "$lib"
-    done
-    for f in "$BINARY" "${DIST_DIR}/lib/"*.dylib; do
-        [ -f "$f" ] || continue
-        if [ "$f" = "$BINARY" ]; then
-            prefix="@executable_path/../lib"
-        else
-            prefix="@loader_path"
-        fi
-        for ref in $(non_system_deps "$f"); do
-            install_name_tool -change "$ref" "${prefix}/$(basename "$ref")" "$f"
-        done
-    done
-
-    # A leftover non-system reference means the bundle only runs on machines
-    # with the packager's library layout — fail the build instead.
-    for f in "$BINARY" "${DIST_DIR}/lib/"*.dylib; do
-        [ -f "$f" ] || continue
-        leftover=$(non_system_deps "$f")
-        if [ -n "${leftover}" ]; then
-            echo "ERROR: $f still references non-system libraries:" >&2
-            echo "${leftover}" >&2
-            exit 1
-        fi
-    done
+    # Third-party libraries are linked statically (build-static-deps.sh),
+    # so nothing is bundled and only macOS system libraries/frameworks
+    # may remain. Anything else means a dependency leaked in dynamically
+    # and the binary would break on machines without it.
+    leftover="$(otool -L "$BINARY" | tail -n +2 | awk '{print $1}' \
+        | grep -Ev '^(/usr/lib/|/System/)' || true)"
+    if [ -n "${leftover}" ]; then
+        echo "ERROR: binary references non-system libraries:" >&2
+        echo "${leftover}" >&2
+        exit 1
+    fi
 
     codesign --force --sign - "$BINARY"
-    for lib in "${DIST_DIR}/lib/"*.dylib; do
-        [ -f "$lib" ] || continue
-        codesign --force --sign - "$lib"
-    done
-    echo "  Re-signed binary and libs"
+    echo "  statically linked; re-signed binary"
 else
     # Linux: no libs bundled — users install runtime deps via their package
     # manager (see Prerequisites at the top of this script).

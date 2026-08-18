@@ -44,7 +44,16 @@ jobs:
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos'
         run: |
-          brew install sdl2 pixman glib pkg-config ninja
+          # Build tools only — libraries are compiled statically from
+          # pinned sources by build-static-deps.sh.
+          brew install pkg-config ninja meson
+
+      - name: Cache static deps (macOS)
+        if: matrix.os == 'macos'
+        uses: actions/cache@v5
+        with:
+          path: build/static-deps
+          key: static-deps-${{ matrix.name }}-${{ hashFiles('build-static-deps.sh') }}
 
       - name: Build
         run: bash build-dist.sh
