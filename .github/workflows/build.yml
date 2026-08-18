@@ -50,7 +50,15 @@ jobs:
 
       - name: Smoke test binary
         run: |
-          ./dist/bin/qemu-pebble --version
+          # Scrub dyld's fallback path so the bundle can't silently resolve
+          # dlopen'd libraries (e.g. sdl2-compat's libSDL3) from the
+          # runner's Homebrew, and cap runtime so a startup hang (modal
+          # error dialog at dyld init) fails here instead of on user
+          # machines. DYLD_* is set inside perl: it would be stripped when
+          # exec'ing the SIP-protected perl binary itself.
+          perl -e '$ENV{DYLD_FALLBACK_LIBRARY_PATH} = "/var/empty";
+                   alarm 120; exec @ARGV or die "exec: $!"' \
+            ./dist/bin/qemu-pebble --version
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v7
