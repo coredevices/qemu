@@ -54,6 +54,7 @@
 #define PBL_EXTFLASH_SIZE       (32 * 1024 * 1024)  /* 32 MB */
 #define PBL_TOUCH_BASE          0x40011000
 #define PBL_AUDIO_BASE          0x40012000
+#define PBL_WDOG_BASE           0x40013000
 
 /* ===== IRQ numbers (NVIC external interrupts) ===== */
 #define PBL_IRQ_UART0     0

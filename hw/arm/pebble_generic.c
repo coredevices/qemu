@@ -25,6 +25,7 @@
 #include "hw/qdev-clock.h"
 #include "hw/sysbus.h"
 #include "hw/misc/unimp.h"
+#include "hw/watchdog/cmsdk-apb-watchdog.h"
 #include "chardev/char-fe.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
@@ -199,6 +200,7 @@ static void pbl_generic_init(MachineState *machine)
     }
 
     /* === System Control === */
+    DeviceState *sysctrl;
     {
         DeviceState *dev = qdev_new(TYPE_PEBBLE_SYSCTRL);
         SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
@@ -216,6 +218,20 @@ static void pbl_generic_init(MachineState *machine)
 
         sysbus_realize_and_unref(sbd, &error_fatal);
         sysbus_mmio_map(sbd, 0, PBL_SYSCTRL_BASE);
+        sysctrl = dev;
+    }
+
+    /* === Watchdog === */
+    /* Stock CMSDK APB watchdog clocked from REFCLK. Its timeout line feeds
+     * the sysctrl reset-reason latch; the second expiry resets the machine. */
+    {
+        DeviceState *dev = qdev_new(TYPE_CMSDK_APB_WATCHDOG);
+        SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+
+        qdev_connect_clock_in(dev, "WDOGCLK", s->refclk);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_mmio_map(sbd, 0, PBL_WDOG_BASE);
+        sysbus_connect_irq(sbd, 0, qdev_get_gpio_in_named(sysctrl, "wdog", 0));
     }
 
     /* === Display === */
