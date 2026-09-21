@@ -66,6 +66,7 @@
 #include "hw/core/cpu.h"
 #include "pebble_snowy_display.h"
 #include "pebble_snowy_display_overlays.h"
+#include "pebble_sunlight.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -220,6 +221,8 @@ typedef struct {
     bool          backlight_enabled;
     float         brightness;
     bool          power_on;
+    // Use sunlight-corrected palette (disables backlight fade)
+    bool          sunlight;
 
     /* State variables */
     PSDisplayState  state;
@@ -766,13 +769,27 @@ static bool s_color_lut_valid = false;
 
 static void ps_display_rebuild_color_lut(PSDisplayGlobals *s)
 {
-    float brightness = s->backlight_enabled ? s->brightness : 0.0f;
-    int max_val = 170 + (int)((255 - 170) * brightness);
+    int max_val;
+    /* Assume a "sunlit" display would always be fully lit */
+    if (s->sunlight) {
+        max_val = 255;
+    } else {
+        float brightness = s->backlight_enabled ? s->brightness : 0.0f;
+        max_val = 170 + (int)((255 - 170) * brightness);
+    }
 
     for (int i = 0; i < 256; i++) {
-        int r = ((i & 0xC0) >> 6) * 255 / 3;
-        int g = ((i & 0x30) >> 4) * 255 / 3;
-        int b = ((i & 0x0C) >> 2) * 255 / 3;
+        uint8_t r2 = (i & 0xC0) >> 6;
+        uint8_t g2 = (i & 0x30) >> 4;
+        uint8_t b2 = (i & 0x0C) >> 2;
+        uint8_t r, g, b;
+        if (s->sunlight) {
+            pebble_sunlight_correct(r2, g2, b2, &r, &g, &b);
+        } else {
+            r = r2 * 255 / 3;
+            g = g2 * 255 / 3;
+            b = b2 * 255 / 3;
+        }
         s_color_lut[i].red   = r * max_val / 255;
         s_color_lut[i].green = g * max_val / 255;
         s_color_lut[i].blue  = b * max_val / 255;
@@ -1162,6 +1179,7 @@ static const Property ps_display_init_properties[] = {
     DEFINE_PROP_UINT8("row_inverted", PSDisplayGlobals, row_inverted, 0),
     DEFINE_PROP_UINT8("col_inverted", PSDisplayGlobals, col_inverted, 0),
     DEFINE_PROP_UINT8("round_mask", PSDisplayGlobals, round_mask, 0),
+    DEFINE_PROP_BOOL("sunlight", PSDisplayGlobals, sunlight, false),
 
 };
 

@@ -40,6 +40,7 @@
 #include "hw/qdev-properties.h"
 #include "ui/console.h"
 #include "ui/pixel_ops.h"
+#include "pebble_sunlight.h"
 
 #define TYPE_PEBBLE_DISPLAY "pebble-display"
 OBJECT_DECLARE_SIMPLE_TYPE(PblDisplay, PEBBLE_DISPLAY)
@@ -103,6 +104,9 @@ struct PblDisplay {
     uint8_t  bl_r;
     uint8_t  bl_g;
     uint8_t  bl_b;
+
+    /* Use sunlight-corrected palette */
+    bool sunlight;
 
     bool redraw;
     bool vibrating;
@@ -197,43 +201,53 @@ static void pbl_display_update(void *opaque)
             } else {
                 /* 8bpp ARGB2222 */
                 uint32_t idx = y * s->width + src_x;
-                argb2222_to_rgb(s->fb[idx], &r, &g, &b);
+                uint8_t raw = s->fb[idx];
+                if (s->sunlight) {
+                    pebble_sunlight_correct((raw >> 4) & 0x3,
+                                            (raw >> 2) & 0x3,
+                                            raw & 0x3, &r, &g, &b);
+                } else {
+                    argb2222_to_rgb(raw, &r, &g, &b);
+                }
             }
 
-            /* Apply brightness scaling for 8bpp */
-            if (s->format == FMT_8BPP && s->brightness < 255 && s->brightness > 0) {
-                r = (uint8_t)((uint32_t)r * s->brightness / 255);
-                g = (uint8_t)((uint32_t)g * s->brightness / 255);
-                b = (uint8_t)((uint32_t)b * s->brightness / 255);
-            }
+            /* Assume a "sunlit" display would always be fully lit */
+            if (!s->sunlight) {
+                /* Apply brightness scaling for 8bpp */
+                if (s->format == FMT_8BPP && s->brightness < 255 && s->brightness > 0) {
+                    r = (uint8_t)((uint32_t)r * s->brightness / 255);
+                    g = (uint8_t)((uint32_t)g * s->brightness / 255);
+                    b = (uint8_t)((uint32_t)b * s->brightness / 255);
+                }
 
-            /* RGB backlight on a transflective LCD: ambient light reflects
-             * off the panel (neutral white) while the backlight shines
-             * through it (colored). The backlight dominates when bright, so
-             * the ambient white contribution must fade out as any channel of
-             * the LED lights up — otherwise pure-blue (0,0,255) leaves R=G=
-             * AMBIENT and you get washed-out light blue instead of deep blue.
-             *
-             * Scale ambient by (255 - max(bl_r,bl_g,bl_b)) so:
-             *   bl=(0,0,0)     → full ambient white floor (readable in room light)
-             *   bl=(0,0,255)   → no ambient, pure deep blue
-             *   bl=(255,255,255) → no ambient, full white
-             *   bl=(128,0,0)   → half ambient + half red → muted red-orange */
-            {
-                const uint32_t amb = PBL_DISPLAY_AMBIENT_FLOOR;
-                uint32_t bl_max = s->bl_r;
-                if (s->bl_g > bl_max) bl_max = s->bl_g;
-                if (s->bl_b > bl_max) bl_max = s->bl_b;
-                uint32_t amb_contrib = amb * (255U - bl_max) / 255U;
-                uint32_t eff_r = amb_contrib + s->bl_r;
-                uint32_t eff_g = amb_contrib + s->bl_g;
-                uint32_t eff_b = amb_contrib + s->bl_b;
-                if (eff_r > 255U) eff_r = 255U;
-                if (eff_g > 255U) eff_g = 255U;
-                if (eff_b > 255U) eff_b = 255U;
-                r = (uint8_t)((uint32_t)r * eff_r / 255U);
-                g = (uint8_t)((uint32_t)g * eff_g / 255U);
-                b = (uint8_t)((uint32_t)b * eff_b / 255U);
+                /* RGB backlight on a transflective LCD: ambient light reflects
+                 * off the panel (neutral white) while the backlight shines
+                 * through it (colored). The backlight dominates when bright, so
+                 * the ambient white contribution must fade out as any channel of
+                 * the LED lights up — otherwise pure-blue (0,0,255) leaves R=G=
+                 * AMBIENT and you get washed-out light blue instead of deep blue.
+                 *
+                 * Scale ambient by (255 - max(bl_r,bl_g,bl_b)) so:
+                 *   bl=(0,0,0)     → full ambient white floor (readable in room light)
+                 *   bl=(0,0,255)   → no ambient, pure deep blue
+                 *   bl=(255,255,255) → no ambient, full white
+                 *   bl=(128,0,0)   → half ambient + half red → muted red-orange */
+                {
+                    const uint32_t amb = PBL_DISPLAY_AMBIENT_FLOOR;
+                    uint32_t bl_max = s->bl_r;
+                    if (s->bl_g > bl_max) bl_max = s->bl_g;
+                    if (s->bl_b > bl_max) bl_max = s->bl_b;
+                    uint32_t amb_contrib = amb * (255U - bl_max) / 255U;
+                    uint32_t eff_r = amb_contrib + s->bl_r;
+                    uint32_t eff_g = amb_contrib + s->bl_g;
+                    uint32_t eff_b = amb_contrib + s->bl_b;
+                    if (eff_r > 255U) eff_r = 255U;
+                    if (eff_g > 255U) eff_g = 255U;
+                    if (eff_b > 255U) eff_b = 255U;
+                    r = (uint8_t)((uint32_t)r * eff_r / 255U);
+                    g = (uint8_t)((uint32_t)g * eff_g / 255U);
+                    b = (uint8_t)((uint32_t)b * eff_b / 255U);
+                }
             }
 
             /* Write pixel to host surface */
@@ -508,6 +522,7 @@ static const Property pbl_display_properties[] = {
     DEFINE_PROP_UINT32("height", PblDisplay, height, 228),
     DEFINE_PROP_UINT32("format", PblDisplay, format, FMT_8BPP),
     DEFINE_PROP_BOOL("round-mask", PblDisplay, round_mask, false),
+    DEFINE_PROP_BOOL("sunlight", PblDisplay, sunlight, false),
 };
 
 static void pbl_display_class_init(ObjectClass *klass, const void *data)
