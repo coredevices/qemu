@@ -139,12 +139,12 @@ static void pbl_generic_init(MachineState *machine)
 
     /* === UARTs === */
     DeviceState *uart1_dev = NULL;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         static const hwaddr uart_base[] = {
-            PBL_UART0_BASE, PBL_UART1_BASE, PBL_UART2_BASE
+            PBL_UART0_BASE, PBL_UART1_BASE, PBL_UART2_BASE, PBL_UART3_BASE
         };
         static const int uart_irq[] = {
-            PBL_IRQ_UART0, PBL_IRQ_UART1, PBL_IRQ_UART2
+            PBL_IRQ_UART0, PBL_IRQ_UART1, PBL_IRQ_UART2, PBL_IRQ_UART3
         };
 
         DeviceState *dev = qdev_new(TYPE_PEBBLE_SIMPLE_UART);
