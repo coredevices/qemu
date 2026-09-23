@@ -55,6 +55,7 @@
 #define PBL_TOUCH_BASE          0x40011000
 #define PBL_AUDIO_BASE          0x40012000
 #define PBL_WDOG_BASE           0x40013000
+#define PBL_UART3_BASE          0x40014000
 
 /* ===== IRQ numbers (NVIC external interrupts) ===== */
 #define PBL_IRQ_UART0     0
@@ -67,6 +68,7 @@
 #define PBL_IRQ_DISPLAY   7
 #define PBL_IRQ_TOUCH     9
 #define PBL_IRQ_AUDIO     10
+#define PBL_IRQ_UART3     12
 
 #define PBL_NUM_IRQS      32
 
