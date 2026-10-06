@@ -33,6 +33,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "hw/irq.h"
@@ -133,15 +134,27 @@ static void argb2222_to_rgb(uint8_t pixel, uint8_t *r, uint8_t *g, uint8_t *b)
     *b = (*b << 6) | (*b << 4) | (*b << 2) | *b;
 }
 
-/* Check if a pixel is inside the circular display area */
+/*
+ * Masked pixels from the edge inwards for each row of one quadrant of the
+ * 260x260 round display, as in the firmware's g_gbitmap_data_row_infos.
+ */
+#define ROUND_MASK_SIZE 260
+static const uint8_t round_mask_quadrant[ROUND_MASK_SIZE / 2] = {
+    113, 107, 102, 98, 94, 90, 87, 85, 82, 80, 77, 75, 73, 71, 69, 67,
+    65, 64, 62, 60, 59, 57, 56, 54, 53, 52, 50, 49, 48, 46, 45, 44, 43,
+    42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 29, 28, 27,
+    26, 26, 25, 24, 23, 23, 22, 21, 21, 20, 19, 19, 18, 18, 17, 16, 16,
+    15, 15, 14, 14, 13, 13, 12, 12, 11, 11, 10, 10, 10, 9, 9, 8, 8, 8,
+    7, 7, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 2, 1,
+    1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
+
 static bool pixel_in_round_mask(int x, int y, int w, int h)
 {
-    int cx = w / 2;
-    int cy = h / 2;
-    int r = (w < h ? w : h) / 2;
-    int dx = x - cx;
-    int dy = y - cy;
-    return (dx * dx + dy * dy) <= (r * r);
+    int qx = x < w / 2 ? x : w - 1 - x;
+    int qy = y < h / 2 ? y : h - 1 - y;
+
+    return qx >= round_mask_quadrant[qy];
 }
 
 static void pbl_display_update(void *opaque)
@@ -458,6 +471,14 @@ static void pbl_display_vibe_tick(void *opaque)
 static void pbl_display_realize(DeviceState *dev, Error **errp)
 {
     PblDisplay *s = PEBBLE_DISPLAY(dev);
+
+    if (s->round_mask &&
+        (s->width != ROUND_MASK_SIZE || s->height != ROUND_MASK_SIZE)) {
+        error_setg(errp, "round mask requires a %dx%d display",
+                   ROUND_MASK_SIZE, ROUND_MASK_SIZE);
+        return;
+    }
+
     s_display_instance = s;
     s->vibe_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, pbl_display_vibe_tick, s);
 
