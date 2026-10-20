@@ -69,6 +69,44 @@ static const Sdl2DecorationPreset s_presets[] = {
         },
     },
     {
+        .name        = "pt2-bg",
+        .file        = "pebble-decorations/pt2-bg.png",
+        .width       = 293,
+        .height      = 432,
+        .screen_rect = { .x =  46, .y = 102, .w = 200, .h = 228 },
+        .close_rect  = { .x = 265, .y =   5, .w =  24, .h =  24 },
+        .num_buttons = 4,
+        .buttons = {
+            { .rect = { .x =   0, .y = 112, .w =  16, .h =  60 },
+              .qcode = Q_KEY_CODE_Q },     /* Back */
+            { .rect = { .x = 277, .y = 112, .w =  16, .h =  60 },
+              .qcode = Q_KEY_CODE_W },     /* Up */
+            { .rect = { .x = 277, .y = 184, .w =  16, .h =  60 },
+              .qcode = Q_KEY_CODE_S },     /* Select */
+            { .rect = { .x = 277, .y = 260, .w =  16, .h =  60 },
+              .qcode = Q_KEY_CODE_X },     /* Down */
+        },
+    },
+    {
+        .name        = "pt2-sg",
+        .file        = "pebble-decorations/pt2-sg.png",
+        .width       = 293,
+        .height      = 432,
+        .screen_rect = { .x =  46, .y = 102, .w = 200, .h = 228 },
+        .close_rect  = { .x = 265, .y =   5, .w =  24, .h =  24 },
+        .num_buttons = 4,
+        .buttons = {
+            { .rect = { .x =   0, .y = 112, .w =  16, .h =  60 },
+              .qcode = Q_KEY_CODE_Q },     /* Back */
+            { .rect = { .x = 277, .y = 112, .w =  16, .h =  60 },
+              .qcode = Q_KEY_CODE_W },     /* Up */
+            { .rect = { .x = 277, .y = 184, .w =  16, .h =  60 },
+              .qcode = Q_KEY_CODE_S },     /* Select */
+            { .rect = { .x = 277, .y = 260, .w =  16, .h =  60 },
+              .qcode = Q_KEY_CODE_X },     /* Down */
+        },
+    },
+    {
         .name        = "pr2-bk20",
         .file        = "pebble-decorations/pr2-bk20.png",
         .width       = 330,
