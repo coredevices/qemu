@@ -138,8 +138,48 @@ static const Sdl2DecorationPreset s_presets[] = {
         },
     },
     {
+        .name        = "pr2-sl20",
+        .file        = "pebble-decorations/pr2-sl20.png",
+        .width       = 330,
+        .height      = 460,
+        .screen_rect  = { .x =  35, .y =  99, .w = 262, .h = 262 },
+        .screen_round = true,
+        .close_rect   = { .x = 302, .y =   5, .w =  24, .h =  24 },
+        .num_buttons  = 4,
+        .buttons = {
+            { .rect = { .x =   0, .y = 212, .w =  18, .h =  36 },
+              .qcode = Q_KEY_CODE_Q },     /* Back */
+            { .rect = { .x = 298, .y = 148, .w =  22, .h =  32 },
+              .qcode = Q_KEY_CODE_W },     /* Up */
+            { .rect = { .x = 308, .y = 212, .w =  22, .h =  32 },
+              .qcode = Q_KEY_CODE_S },     /* Select */
+            { .rect = { .x = 290, .y = 276, .w =  26, .h =  34 },
+              .qcode = Q_KEY_CODE_X },     /* Down */
+        },
+    },
+    {
         .name        = "pr2-gd14",
         .file        = "pebble-decorations/pr2-gd14.png",
+        .width       = 330,
+        .height      = 460,
+        .screen_rect  = { .x =  35, .y =  99, .w = 262, .h = 262 },
+        .screen_round = true,
+        .close_rect   = { .x = 302, .y =   5, .w =  24, .h =  24 },
+        .num_buttons  = 4,
+        .buttons = {
+            { .rect = { .x =   0, .y = 212, .w =  18, .h =  36 },
+              .qcode = Q_KEY_CODE_Q },     /* Back */
+            { .rect = { .x = 298, .y = 148, .w =  22, .h =  32 },
+              .qcode = Q_KEY_CODE_W },     /* Up */
+            { .rect = { .x = 308, .y = 212, .w =  22, .h =  32 },
+              .qcode = Q_KEY_CODE_S },     /* Select */
+            { .rect = { .x = 290, .y = 276, .w =  26, .h =  34 },
+              .qcode = Q_KEY_CODE_X },     /* Down */
+        },
+    },
+    {
+        .name        = "pr2-sl14",
+        .file        = "pebble-decorations/pr2-sl14.png",
         .width       = 330,
         .height      = 460,
         .screen_rect  = { .x =  35, .y =  99, .w = 262, .h = 262 },
