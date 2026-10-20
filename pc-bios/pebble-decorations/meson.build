@@ -4,7 +4,9 @@ decorations = files(
   'pt2-bg.png',
   'pt2-sg.png',
   'pr2-bk20.png',
+  'pr2-sl20.png',
   'pr2-gd14.png',
+  'pr2-sl14.png',
   'p2d-bk.png',
   'p2d-wh.png',
 )
