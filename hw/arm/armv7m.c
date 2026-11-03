@@ -25,6 +25,8 @@
 #include "target/arm/cpu-features.h"
 #include "target/arm/cpu-qom.h"
 #include "migration/vmstate.h"
+#include "qemu/host-utils.h"
+#include "qemu/timer.h"
 
 /* Bitbanded IO.  Each word corresponds to a single bit.  */
 
@@ -246,6 +248,86 @@ static const MemoryRegionOps ppb_default_ops = {
     .valid.max_access_size = 8,
 };
 
+/*
+ * Data Watchpoint and Trace unit: only the cycle counter, counting the CPU
+ * clock in virtual time. No comparators.
+ */
+#define DWT_CTRL            0x0
+#define DWT_CYCCNT          0x4
+#define DWT_CTRL_CYCCNTENA  (1U << 0)
+
+static uint64_t dwt_cycles(ARMv7MState *s)
+{
+    return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                    clock_get_hz(s->cpuclk), NANOSECONDS_PER_SECOND);
+}
+
+static uint32_t dwt_cyccnt(ARMv7MState *s)
+{
+    if (!(s->dwt_ctrl & DWT_CTRL_CYCCNTENA)) {
+        return s->dwt_cyccnt;
+    }
+    return s->dwt_cyccnt + (uint32_t)(dwt_cycles(s) - s->dwt_cycles);
+}
+
+static MemTxResult dwt_read(void *opaque, hwaddr addr, uint64_t *data,
+                            unsigned size, MemTxAttrs attrs)
+{
+    ARMv7MState *s = opaque;
+
+    if (attrs.user) {
+        return MEMTX_ERROR;
+    }
+
+    switch (addr) {
+    case DWT_CTRL:
+        *data = s->dwt_ctrl;
+        break;
+    case DWT_CYCCNT:
+        *data = dwt_cyccnt(s);
+        break;
+    default:
+        qemu_log_mask(LOG_UNIMP, "DWT read: offset 0x%x\n", (uint32_t)addr);
+        *data = 0;
+        break;
+    }
+    return MEMTX_OK;
+}
+
+static MemTxResult dwt_write(void *opaque, hwaddr addr, uint64_t value,
+                             unsigned size, MemTxAttrs attrs)
+{
+    ARMv7MState *s = opaque;
+
+    if (attrs.user) {
+        return MEMTX_ERROR;
+    }
+
+    switch (addr) {
+    case DWT_CTRL:
+        s->dwt_cyccnt = dwt_cyccnt(s);
+        s->dwt_cycles = dwt_cycles(s);
+        s->dwt_ctrl = value & DWT_CTRL_CYCCNTENA;
+        break;
+    case DWT_CYCCNT:
+        s->dwt_cyccnt = value;
+        s->dwt_cycles = dwt_cycles(s);
+        break;
+    default:
+        qemu_log_mask(LOG_UNIMP, "DWT write: offset 0x%x\n", (uint32_t)addr);
+        break;
+    }
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps dwt_ops = {
+    .read_with_attrs = dwt_read,
+    .write_with_attrs = dwt_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+};
+
 static void armv7m_instance_init(Object *obj)
 {
     ARMv7MState *s = ARMV7M(obj);
@@ -429,6 +511,10 @@ static void armv7m_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion_overlap(&s->container, 0xe0000000,
                                         &s->defaultmem, -1);
 
+    memory_region_init_io(&s->dwtmem, OBJECT(s), &dwt_ops, s, "v7m-dwt",
+                          0x1000);
+    memory_region_add_subregion(&s->container, 0xe0001000, &s->dwtmem);
+
     /* Wire the NVIC up to the CPU */
     sbd = SYS_BUS_DEVICE(&s->nvic);
     sysbus_connect_irq(sbd, 0,
@@ -568,20 +654,33 @@ static const Property armv7m_properties[] = {
 
 static const VMStateDescription vmstate_armv7m = {
     .name = "armv7m",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_CLOCK(refclk, ARMv7MState),
         VMSTATE_CLOCK(cpuclk, ARMv7MState),
+        VMSTATE_UINT32(dwt_ctrl, ARMv7MState),
+        VMSTATE_UINT32(dwt_cyccnt, ARMv7MState),
+        VMSTATE_UINT64(dwt_cycles, ARMv7MState),
         VMSTATE_END_OF_LIST()
     }
 };
+
+static void armv7m_device_reset(DeviceState *dev)
+{
+    ARMv7MState *s = ARMV7M(dev);
+
+    s->dwt_ctrl = 0;
+    s->dwt_cyccnt = 0;
+    s->dwt_cycles = 0;
+}
 
 static void armv7m_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = armv7m_realize;
+    device_class_set_legacy_reset(dc, armv7m_device_reset);
     dc->vmsd = &vmstate_armv7m;
     device_class_set_props(dc, armv7m_properties);
 }
