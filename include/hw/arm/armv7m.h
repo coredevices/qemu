@@ -91,6 +91,11 @@ struct ARMv7MState {
     MemoryRegion sysreg_ns_mem;
     /* MR providing default PPB behaviour */
     MemoryRegion defaultmem;
+    /* DWT, cycle counter only */
+    MemoryRegion dwtmem;
+    uint32_t dwt_ctrl;
+    uint32_t dwt_cyccnt;
+    uint64_t dwt_cycles;
 
     Clock *refclk;
     Clock *cpuclk;
