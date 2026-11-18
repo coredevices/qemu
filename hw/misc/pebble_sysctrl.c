@@ -17,6 +17,14 @@
  *                    Bit 0: power on
  *                    Bit 1: soft reset
  *                    Bit 2: watchdog
+ *   0x18 BT_ADDR_LO - Bluetooth address, its four least significant
+ *                    octets (read-only)
+ *   0x1C BT_ADDR_HI - Bluetooth address, its two most significant
+ *                    octets (read-only)
+ *
+ * The Bluetooth address is the "bt-addr" property, all zeros unless given
+ * (-global pebble-sysctrl.bt-addr=XX:XX:XX:XX:XX:XX): the firmware then
+ * uses its controller's.
  *
  * GPIO input "wdog": the watchdog timeout line. Its level when a reset
  * begins decides between a soft and a watchdog reset.
@@ -29,8 +37,10 @@
 #include "qemu/log.h"
 #include "hw/sysbus.h"
 #include "hw/qdev-properties.h"
+#include "hw/qdev-properties-system.h"
 #include "hw/irq.h"
 #include "hw/resettable.h"
+#include "net/net.h"
 
 #define TYPE_PEBBLE_SYSCTRL "pebble-sysctrl"
 OBJECT_DECLARE_SIMPLE_TYPE(PblSysCtrl, PEBBLE_SYSCTRL)
@@ -42,6 +52,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PblSysCtrl, PEBBLE_SYSCTRL)
 #define SYSCTRL_DISPLAY_H   0x0C
 #define SYSCTRL_DISPLAY_F   0x10
 #define SYSCTRL_RESET_REASON 0x14
+#define SYSCTRL_BT_ADDR_LO  0x18
+#define SYSCTRL_BT_ADDR_HI  0x1C
 
 /* Reset reason bits */
 #define RESET_POR   (1 << 0)
@@ -63,6 +75,7 @@ struct PblSysCtrl {
     uint32_t display_w;
     uint32_t display_h;
     uint32_t display_fmt;
+    MACAddr bt_addr;
 
     uint32_t reset_reason;
     bool wdog_level;
@@ -86,6 +99,11 @@ static uint64_t pbl_sysctrl_read(void *opaque, hwaddr offset, unsigned size)
         return s->display_fmt;
     case SYSCTRL_RESET_REASON:
         return s->reset_reason;
+    case SYSCTRL_BT_ADDR_LO:
+        return s->bt_addr.a[5] | (s->bt_addr.a[4] << 8) |
+               (s->bt_addr.a[3] << 16) | ((uint32_t)s->bt_addr.a[2] << 24);
+    case SYSCTRL_BT_ADDR_HI:
+        return s->bt_addr.a[1] | (s->bt_addr.a[0] << 8);
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pebble-sysctrl: bad read offset 0x%" HWADDR_PRIx "\n",
@@ -157,6 +175,7 @@ static const Property pbl_sysctrl_properties[] = {
     DEFINE_PROP_UINT32("display-width", PblSysCtrl, display_w, 0),
     DEFINE_PROP_UINT32("display-height", PblSysCtrl, display_h, 0),
     DEFINE_PROP_UINT32("display-format", PblSysCtrl, display_fmt, 0),
+    DEFINE_PROP_MACADDR("bt-addr", PblSysCtrl, bt_addr),
 };
 
 static void pbl_sysctrl_class_init(ObjectClass *klass, const void *data)
