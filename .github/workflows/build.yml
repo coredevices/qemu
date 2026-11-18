@@ -23,9 +23,6 @@ jobs:
           - name: macos-arm64
             runner: macos-latest
             os: macos
-          - name: macos-x86_64
-            runner: macos-latest-large
-            os: macos
 
     steps:
       - name: Checkout
