@@ -17,16 +17,25 @@
  * Control Registers:
  *   0x00 CTRL       - Bit 0: enable, Bit 1: update request (write-1-to-set)
  *   0x04 STATUS     - Bit 0: busy (always 0 in QEMU)
- *   0x08 WIDTH      - Display width in pixels (read-only)
- *   0x0C HEIGHT     - Display height in pixels (read-only)
- *   0x10 FORMAT     - Bits per pixel (read-only)
- *   0x14 FLAGS      - Bit 0: round mask (read-only)
+ *   0x08 WIDTH      - Display width in pixels
+ *   0x0C HEIGHT     - Display height in pixels
+ *   0x10 FORMAT     - Bits per pixel
+ *   0x14 FLAGS      - Bit 0: round mask
  *   0x18 BRIGHTNESS - Backlight brightness 0-255
  *   0x1C INTSTAT    - Bit 0: update complete (write-1-to-clear)
  *   0x20 INTCTRL    - Bit 0: update complete IRQ enable
  *   0x24 BL_RED     - RGB backlight red channel 0-255 (default 255)
  *   0x28 BL_GREEN   - RGB backlight green channel 0-255 (default 255)
  *   0x2C BL_BLUE    - RGB backlight blue channel 0-255 (default 255)
+ *   0x400 MASK      - Round mask: pixels hidden at each end of every row of
+ *                     the top half, one byte per row, mirrored in the bottom
+ *                     half (512 bytes, little-endian words)
+ *
+ * WIDTH, HEIGHT, FORMAT, FLAGS and MASK read the geometry in use, the
+ * machine's size and format, unmasked, until the firmware sets its own: writes
+ * made while the display is disabled take effect when it is enabled, if the
+ * framebuffer fits the region, and are dropped otherwise. A reset restores the
+ * machine's geometry.
  *
  * Copyright (c) 2026 Core Devices LLC
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -59,6 +68,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PblDisplay, PEBBLE_DISPLAY)
 #define DISP_BL_RED     0x24
 #define DISP_BL_GREEN   0x28
 #define DISP_BL_BLUE    0x2C
+#define DISP_MASK       0x400
+#define MASK_SIZE       512
 
 /* CTRL bits */
 #define CTRL_ENABLE     (1 << 0)
@@ -73,6 +84,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(PblDisplay, PEBBLE_DISPLAY)
 /* Display format constants */
 #define FMT_1BPP  1
 #define FMT_8BPP  8
+
+/* Size of the framebuffer region */
+#define FB_REGION_SIZE (128 * 1024)
 
 /* Transflective LCD ambient-reflectance floor (0-255). Sets the visible
  * brightness when the RGB backlight is fully off, matching a Pebble's
@@ -91,11 +105,24 @@ struct PblDisplay {
     uint8_t *fb;
     uint32_t fb_size;
 
-    /* Configuration (set via properties before realize) */
+    /* Machine geometry (set via properties before realize) */
+    uint32_t cfg_width;
+    uint32_t cfg_height;
+    uint32_t cfg_format;    /* bpp: 1 or 8 */
+
+    /* Geometry in use */
     uint32_t width;
     uint32_t height;
-    uint32_t format;    /* bpp: 1 or 8 */
+    uint32_t format;
     bool round_mask;
+    uint8_t mask[MASK_SIZE];
+
+    /* Geometry the firmware set, applied on enable */
+    uint32_t new_width;
+    uint32_t new_height;
+    uint32_t new_format;
+    bool new_round_mask;
+    uint8_t new_mask[MASK_SIZE];
 
     /* Registers */
     uint32_t ctrl;
@@ -110,6 +137,7 @@ struct PblDisplay {
     bool sunlight;
 
     bool redraw;
+    bool resize;
     bool vibrating;
     int vibe_frame;
     QEMUTimer *vibe_timer;
@@ -134,27 +162,12 @@ static void argb2222_to_rgb(uint8_t pixel, uint8_t *r, uint8_t *g, uint8_t *b)
     *b = (*b << 6) | (*b << 4) | (*b << 2) | *b;
 }
 
-/*
- * Masked pixels from the edge inwards for each row of one quadrant of the
- * 260x260 round display, as in the firmware's g_gbitmap_data_row_infos.
- */
-#define ROUND_MASK_SIZE 260
-static const uint8_t round_mask_quadrant[ROUND_MASK_SIZE / 2] = {
-    113, 107, 102, 98, 94, 90, 87, 85, 82, 80, 77, 75, 73, 71, 69, 67,
-    65, 64, 62, 60, 59, 57, 56, 54, 53, 52, 50, 49, 48, 46, 45, 44, 43,
-    42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 29, 28, 27,
-    26, 26, 25, 24, 23, 23, 22, 21, 21, 20, 19, 19, 18, 18, 17, 16, 16,
-    15, 15, 14, 14, 13, 13, 12, 12, 11, 11, 10, 10, 10, 9, 9, 8, 8, 8,
-    7, 7, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 2, 1,
-    1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-};
-
-static bool pixel_in_round_mask(int x, int y, int w, int h)
+static bool pixel_in_round_mask(PblDisplay *s, int x, int y)
 {
-    int qx = x < w / 2 ? x : w - 1 - x;
-    int qy = y < h / 2 ? y : h - 1 - y;
+    int qx = x < (int)s->width / 2 ? x : (int)s->width - 1 - x;
+    int qy = y < (int)s->height / 2 ? y : (int)s->height - 1 - y;
 
-    return qx >= round_mask_quadrant[qy];
+    return qx >= s->mask[qy];
 }
 
 static void pbl_display_update(void *opaque)
@@ -164,7 +177,16 @@ static void pbl_display_update(void *opaque)
     int bpp, stride;
     uint8_t *dest;
 
-    if (!s->con || !(s->ctrl & CTRL_ENABLE)) {
+    if (!s->con) {
+        return;
+    }
+
+    if (s->resize) {
+        s->resize = false;
+        qemu_console_resize(s->con, s->width, s->height);
+    }
+
+    if (!(s->ctrl & CTRL_ENABLE)) {
         return;
     }
 
@@ -200,7 +222,7 @@ static void pbl_display_update(void *opaque)
             } else
             /* Check round mask */
             if (s->round_mask &&
-                !pixel_in_round_mask(src_x, y, s->width, s->height)) {
+                !pixel_in_round_mask(s, src_x, y)) {
                 r = g = b = 0;
             } else if (s->format == FMT_1BPP) {
                 /* 1bpp: LSB first, rows padded to 32-bit boundary */
@@ -298,12 +320,87 @@ static const GraphicHwOps pbl_display_ops = {
     .invalidate = pbl_display_invalidate,
 };
 
+/* === Geometry === */
+
+static uint32_t pbl_display_fb_size(uint32_t width, uint32_t height,
+                                    uint32_t format)
+{
+    if (format == FMT_1BPP) {
+        return ((width + 31) / 32) * 4 * height;
+    }
+    return width * height;  /* 8bpp = 1 byte per pixel */
+}
+
+static bool pbl_display_geometry_valid(uint32_t width, uint32_t height,
+                                       uint32_t format)
+{
+    return (format == FMT_1BPP || format == FMT_8BPP) &&
+           width > 0 && height > 0 && width <= 1024 &&
+           height <= 2 * MASK_SIZE &&
+           pbl_display_fb_size(width, height, format) <= FB_REGION_SIZE;
+}
+
+static void pbl_display_set_geometry(PblDisplay *s, uint32_t width,
+                                     uint32_t height, uint32_t format,
+                                     bool round_mask, const uint8_t *mask)
+{
+    memcpy(s->mask, mask, MASK_SIZE);
+    memcpy(s->new_mask, mask, MASK_SIZE);
+    s->width = s->new_width = width;
+    s->height = s->new_height = height;
+    s->format = s->new_format = format;
+    s->round_mask = s->new_round_mask = round_mask;
+    s->fb_size = pbl_display_fb_size(width, height, format);
+    s->fb = g_realloc(s->fb, s->fb_size);
+    memset(s->fb, 0, s->fb_size);
+    /* The UI resizes the console, as it may only do it from its own thread */
+    s->resize = true;
+    s->redraw = true;
+}
+
+static void pbl_display_apply_geometry(PblDisplay *s)
+{
+    if (s->new_width == s->width && s->new_height == s->height &&
+        s->new_format == s->format && s->new_round_mask == s->round_mask &&
+        memcmp(s->new_mask, s->mask, MASK_SIZE) == 0) {
+        return;
+    }
+
+    if (!pbl_display_geometry_valid(s->new_width, s->new_height,
+                                    s->new_format)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pebble-display: unsupported geometry %ux%u, %u bpp\n",
+                      s->new_width, s->new_height, s->new_format);
+        s->new_width = s->width;
+        s->new_height = s->height;
+        s->new_format = s->format;
+        s->new_round_mask = s->round_mask;
+        memcpy(s->new_mask, s->mask, MASK_SIZE);
+        return;
+    }
+
+    pbl_display_set_geometry(s, s->new_width, s->new_height, s->new_format,
+                             s->new_round_mask, s->new_mask);
+}
+
+static void pbl_display_set_machine_geometry(PblDisplay *s)
+{
+    static const uint8_t no_mask[MASK_SIZE];
+
+    pbl_display_set_geometry(s, s->cfg_width, s->cfg_height, s->cfg_format,
+                             false, no_mask);
+}
+
 /* === Control register access === */
 
 static uint64_t pbl_display_regs_read(void *opaque, hwaddr offset,
                                        unsigned size)
 {
     PblDisplay *s = opaque;
+
+    if (offset >= DISP_MASK && offset < DISP_MASK + MASK_SIZE) {
+        return ldl_le_p(&s->mask[offset - DISP_MASK]);
+    }
 
     switch (offset) {
     case DISP_CTRL:
@@ -343,14 +440,46 @@ static void pbl_display_regs_write(void *opaque, hwaddr offset,
 {
     PblDisplay *s = opaque;
 
+    if (offset >= DISP_MASK && offset < DISP_MASK + MASK_SIZE) {
+        if (s->ctrl & CTRL_ENABLE) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "pebble-display: mask written while enabled\n");
+            return;
+        }
+        stl_le_p(&s->new_mask[offset - DISP_MASK], value);
+        return;
+    }
+
     switch (offset) {
     case DISP_CTRL:
+        if ((value & CTRL_ENABLE) && !(s->ctrl & CTRL_ENABLE)) {
+            pbl_display_apply_geometry(s);
+        }
         s->ctrl = (s->ctrl & ~CTRL_ENABLE) | (value & CTRL_ENABLE);
         if (value & CTRL_UPDATE) {
             /* Update request: trigger redraw and signal completion */
             s->redraw = true;
             s->intstat |= INT_UPDATE_DONE;
             pbl_display_update_irq(s);
+        }
+        break;
+    case DISP_WIDTH:
+    case DISP_HEIGHT:
+    case DISP_FORMAT:
+    case DISP_FLAGS:
+        if (s->ctrl & CTRL_ENABLE) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "pebble-display: geometry written while enabled\n");
+            break;
+        }
+        if (offset == DISP_WIDTH) {
+            s->new_width = value;
+        } else if (offset == DISP_HEIGHT) {
+            s->new_height = value;
+        } else if (offset == DISP_FORMAT) {
+            s->new_format = value;
+        } else {
+            s->new_round_mask = value & FLAG_ROUND;
         }
         break;
     case DISP_BRIGHTNESS:
@@ -472,29 +601,21 @@ static void pbl_display_realize(DeviceState *dev, Error **errp)
 {
     PblDisplay *s = PEBBLE_DISPLAY(dev);
 
-    if (s->round_mask &&
-        (s->width != ROUND_MASK_SIZE || s->height != ROUND_MASK_SIZE)) {
-        error_setg(errp, "round mask requires a %dx%d display",
-                   ROUND_MASK_SIZE, ROUND_MASK_SIZE);
+    if (!pbl_display_geometry_valid(s->cfg_width, s->cfg_height,
+                                    s->cfg_format)) {
+        error_setg(errp, "unsupported geometry %ux%u, %u bpp", s->cfg_width,
+                   s->cfg_height, s->cfg_format);
         return;
     }
 
     s_display_instance = s;
     s->vibe_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, pbl_display_vibe_tick, s);
 
-    /* Calculate framebuffer size */
-    if (s->format == FMT_1BPP) {
-        uint32_t row_bytes = ((s->width + 31) / 32) * 4;
-        s->fb_size = row_bytes * s->height;
-    } else {
-        s->fb_size = s->width * s->height;  /* 8bpp = 1 byte per pixel */
-    }
-
-    s->fb = g_malloc0(s->fb_size);
-
     /* Create QemuConsole */
     s->con = graphic_console_init(dev, 0, &pbl_display_ops, s);
+    pbl_display_set_machine_geometry(s);
     qemu_console_resize(s->con, s->width, s->height);
+    s->resize = false;
 
     s->brightness = 0xFF;
     s->bl_r = 0xFF;
@@ -514,7 +635,7 @@ static void pbl_display_init(Object *obj)
 
     /* Region 1: framebuffer (sized to max, actual usage depends on format) */
     memory_region_init_io(&s->iomem_fb, obj, &pbl_display_fb_ops, s,
-                          "pebble-display-fb", 128 * 1024);
+                          "pebble-display-fb", FB_REGION_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem_fb);
 
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
@@ -533,16 +654,15 @@ static void pbl_display_reset(DeviceState *dev)
     s->bl_b = 0xFF;
     s->redraw = true;
 
-    if (s->fb) {
-        memset(s->fb, 0, s->fb_size);
+    if (s->con) {
+        pbl_display_set_machine_geometry(s);
     }
 }
 
 static const Property pbl_display_properties[] = {
-    DEFINE_PROP_UINT32("width", PblDisplay, width, 200),
-    DEFINE_PROP_UINT32("height", PblDisplay, height, 228),
-    DEFINE_PROP_UINT32("format", PblDisplay, format, FMT_8BPP),
-    DEFINE_PROP_BOOL("round-mask", PblDisplay, round_mask, false),
+    DEFINE_PROP_UINT32("width", PblDisplay, cfg_width, 200),
+    DEFINE_PROP_UINT32("height", PblDisplay, cfg_height, 228),
+    DEFINE_PROP_UINT32("format", PblDisplay, cfg_format, FMT_8BPP),
     DEFINE_PROP_BOOL("sunlight", PblDisplay, sunlight, false),
 };
 

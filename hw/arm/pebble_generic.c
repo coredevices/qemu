@@ -251,7 +251,6 @@ static void pbl_generic_init(MachineState *machine)
         qdev_prop_set_uint32(dev, "width", cfg->display_width);
         qdev_prop_set_uint32(dev, "height", cfg->display_height);
         qdev_prop_set_uint32(dev, "format", cfg->display_bpp);
-        qdev_prop_set_bit(dev, "round-mask", cfg->display_round);
 
         sysbus_realize_and_unref(sbd, &error_fatal);
         sysbus_mmio_map(sbd, 0, PBL_DISPLAY_BASE);     /* registers */
